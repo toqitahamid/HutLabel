@@ -10,3 +10,8 @@ dist
 public/tiles
 # Source orthomosaics — 15 GB of GeoTIFFs, never committed
 data
+.vercel
+# Vendored AI-agent skill docs (restore with `npx skills add clerk/skills`;
+# pinned by skills-lock.json, which IS committed)
+.agents
+.claude/skills
