@@ -1,0 +1,12 @@
+node_modules
+dist
+.env.local
+.env
+*.local
+.DS_Store
+# Serena LSP tool state
+.serena
+# Local dev tileset decoded from demo_pyramid.json (regenerate with npm run tiles:demo)
+public/tiles
+# Source orthomosaics — 15 GB of GeoTIFFs, never committed
+data
