@@ -7,7 +7,11 @@ Runs anywhere the data is — locally on the Mac (the orthos are in data/) or on
 Delta. It's CPU batch work, not GPU (Delta is only needed later for training).
 
 Usage:
-    python3 tiler.py <src.tif> <out_dir>
+    python3 tiler.py <src.tif> <out_dir> [ext] [quality]
+
+`ext` is the tile image format: "png" (default, lossless) or "webp" (lossy,
+keeps alpha). `quality` (webp only, default 82) is passed straight to Pillow's
+encoder.
 
 `out_dir` must be the ortho's own tile root, i.e. .../<ortho_id>, because the
 viewer requests tiles as {TILE_BASE}/{ortho_id}/{z}/{x}_{y}.png — this script
@@ -30,6 +34,8 @@ Image.MAX_IMAGE_PIXELS = None
 
 SRC = sys.argv[1]
 OUT = sys.argv[2]
+EXT = sys.argv[3] if len(sys.argv) > 3 else "png"
+QUALITY = int(sys.argv[4]) if len(sys.argv) > 4 else 82
 TS = 256
 
 with rasterio.open(SRC) as ds:
@@ -58,8 +64,14 @@ for lvl in range(maxlevel, -1, -1):
             tile = img.crop(box)
             if tile.getextrema()[3][1] == 0:   # fully transparent -> skip
                 continue
-            fp = os.path.join(ldir, f"{c}_{r}.png")
-            tile.save(fp)
+            fp = os.path.join(ldir, f"{c}_{r}.{EXT}")
+            if EXT == "webp":
+                if QUALITY == 100:          # convention: quality 100 -> lossless mode
+                    tile.save(fp, "WEBP", lossless=True)
+                else:
+                    tile.save(fp, "WEBP", quality=QUALITY)
+            else:
+                tile.save(fp)
             nbytes += os.path.getsize(fp); ntiles += 1; lvl_tiles += 1
     levels_meta.append((lvl, lw, lh, cols, rows, lvl_tiles))
     print(f"level {lvl}: {lw}x{lh}  grid {cols}x{rows}  tiles {lvl_tiles}")
