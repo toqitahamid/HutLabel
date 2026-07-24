@@ -4,15 +4,15 @@ import {
   type Hut,
   type HutAttributes,
 } from "../huts/model";
-import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
+import { isCloudConfigured } from "./config";
 
 // The persistence seam. Huts are ROWS, not a per-image blob (FlagLabel's shape):
 // each edit is its own CRUD call, which is what makes the PI's live oversight
 // actually live and keeps writes small. Two implementations:
-//   - SupabaseHutBackend: the real backend (orthos admin-seeded, huts open to
-//     labelers under RLS).
+//   - ApiHutBackend: the real backend — Vercel functions under /api backed by
+//     Neon Postgres, authenticated with the Clerk session token.
 //   - LocalDevHutBackend: in-memory, seeded from the decoded demo manifest, used
-//     when Supabase is not configured so `npm run dev` runs end-to-end offline.
+//     when Clerk is not configured so `npm run dev` runs end-to-end offline.
 export interface HutBackend {
   listOrthos(): Promise<Ortho[]>;
   listHuts(orthoId: string): Promise<Hut[]>;
@@ -25,38 +25,50 @@ export interface HutBackend {
     attrs: HutAttributes,
   ): Promise<Hut>;
   updateHut(id: string, attrs: HutAttributes): Promise<void>;
+  updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void>;
   deleteHut(id: string): Promise<void>;
 }
 
-const HUT_COLUMNS =
-  "id, ortho_id, x, y, w, h, structure_type, confidence, labeler_id, created_at";
+type GetToken = () => Promise<string | null>;
 
-export class SupabaseHutBackend implements HutBackend {
-  async listOrthos(): Promise<Ortho[]> {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from("orthos")
-      .select("id, site, visit, width, height, max_level")
-      .order("site", { ascending: true })
-      .order("visit", { ascending: true });
-    if (error) throw new Error(`listOrthos failed: ${error.message}`);
-    return (data ?? []) as Ortho[];
+export class ApiHutBackend implements HutBackend {
+  constructor(private getToken: GetToken) {}
+
+  // All routes require the Clerk session JWT; the functions verify it and fill
+  // `labeler_id` server-side from the token, never from the request body.
+  private async call<T>(path: string, init?: RequestInit): Promise<T> {
+    const token = await this.getToken();
+    if (!token) throw new Error("Not signed in.");
+    const res = await fetch(path, {
+      ...init,
+      headers: {
+        ...init?.headers,
+        Authorization: `Bearer ${token}`,
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      },
+    });
+    if (!res.ok) {
+      let detail = `${res.status}`;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body.error) detail = body.error;
+      } catch {
+        // non-JSON error body; keep the status code
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as T;
   }
 
-  async listHuts(orthoId: string): Promise<Hut[]> {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from("huts")
-      .select(HUT_COLUMNS)
-      .eq("ortho_id", orthoId)
-      .order("created_at", { ascending: true });
-    if (error) throw new Error(`listHuts failed: ${error.message}`);
-    return (data ?? []) as Hut[];
+  listOrthos(): Promise<Ortho[]> {
+    return this.call<Ortho[]>("/api/orthos");
   }
 
-  // Insert one hut. `labeler_id` is filled server-side (DEFAULT auth.uid()); the
-  // insert returns the full row so the UI gets the DB-assigned id + timestamp.
-  async createHut(
+  listHuts(orthoId: string): Promise<Hut[]> {
+    return this.call<Hut[]>(`/api/huts?ortho_id=${encodeURIComponent(orthoId)}`);
+  }
+
+  createHut(
     orthoId: string,
     x: number,
     y: number,
@@ -64,40 +76,30 @@ export class SupabaseHutBackend implements HutBackend {
     h: number | null,
     attrs: HutAttributes,
   ): Promise<Hut> {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from("huts")
-      .insert({ ortho_id: orthoId, x, y, w, h, ...attrs })
-      .select(HUT_COLUMNS)
-      .single();
-    if (error) throw new Error(`createHut failed: ${error.message}`);
-    return data as Hut;
+    return this.call<Hut>("/api/huts", {
+      method: "POST",
+      body: JSON.stringify({ ortho_id: orthoId, x, y, w, h, ...attrs }),
+    });
   }
 
   async updateHut(id: string, attrs: HutAttributes): Promise<void> {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from("huts")
-      .update(attrs)
-      .eq("id", id)
-      .select("id");
-    if (error) throw new Error(`updateHut failed: ${error.message}`);
-    if (!data || data.length === 0) {
-      throw new Error(`updateHut: no hut ${id} (already gone, or not permitted).`);
-    }
+    await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(attrs),
+    });
+  }
+
+  async updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void> {
+    await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ x, y, w, h }),
+    });
   }
 
   async deleteHut(id: string): Promise<void> {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from("huts")
-      .delete()
-      .eq("id", id)
-      .select("id");
-    if (error) throw new Error(`deleteHut failed: ${error.message}`);
-    if (!data || data.length === 0) {
-      throw new Error(`deleteHut: no hut ${id} (already gone, or not permitted).`);
-    }
+    await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
   }
 }
 
@@ -111,7 +113,7 @@ export class LocalDevHutBackend implements HutBackend {
     const res = await fetch("/tiles/orthos.dev.json");
     if (!res.ok) {
       throw new Error(
-        "No dev tileset. Run `npm run tiles:demo`, or configure Supabase.",
+        "No dev tileset. Run `npm run tiles:demo`, or configure Clerk + the API.",
       );
     }
     return (await res.json()) as Ortho[];
@@ -149,16 +151,22 @@ export class LocalDevHutBackend implements HutBackend {
     if (hut) this.huts.set(id, { ...hut, ...attrs });
   }
 
+  async updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void> {
+    const hut = this.huts.get(id);
+    if (hut) this.huts.set(id, { ...hut, x, y, w, h });
+  }
+
   async deleteHut(id: string): Promise<void> {
     this.huts.delete(id);
   }
 }
 
-// Pick the backend once: real Supabase when configured, else the offline dev
-// store. `defaultAttributes` is re-exported for convenience at call sites.
-export function makeHutBackend(): HutBackend {
-  return isSupabaseConfigured()
-    ? new SupabaseHutBackend()
+// Pick the backend once: the /api backend when Clerk is configured (getToken
+// comes from the signed-in account), else the offline dev store.
+// `defaultAttributes` is re-exported for convenience at call sites.
+export function makeHutBackend(getToken: GetToken | null): HutBackend {
+  return isCloudConfigured() && getToken
+    ? new ApiHutBackend(getToken)
     : new LocalDevHutBackend();
 }
 

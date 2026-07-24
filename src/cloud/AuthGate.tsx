@@ -1,58 +1,47 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
-import { getSupabaseClient, isSupabaseConfigured } from "./supabase-client";
+import { useCallback, useContext, useEffect, useRef, useState, createContext } from "react";
+import { useAuth, useClerk, useSignIn, useUser } from "@clerk/react";
+import { isCloudConfigured } from "./config";
 
-// Signed-in account, surfaced to the app header (email + sign out). Null in local
-// dev (no Supabase), where the app runs unauthenticated against the demo tileset.
-export type Account = { email: string; signOut: () => void };
+// Signed-in account, surfaced to the app header (email + sign out) and to the
+// API backend (bearer token). Null in local dev (no Clerk), where the app runs
+// unauthenticated against the demo tileset.
+export type Account = {
+  email: string;
+  // UI gate only (shows the Admin button); /api/admin-users re-checks the role
+  // server-side against Clerk, so a spoofed client gains nothing.
+  isAdmin: boolean;
+  signOut: () => void;
+  getToken: () => Promise<string | null>;
+};
 const AccountContext = createContext<Account | null>(null);
 export function useAccount(): Account | null {
   return useContext(AccountContext);
 }
 
-// Invite-only login gate (web). When Supabase is NOT configured (local dev), this
+// Invite-only login gate (web). When Clerk is NOT configured (local dev), this
 // is a pure pass-through so the viewer runs offline against the demo tileset.
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  if (!isSupabaseConfigured()) {
+  if (!isCloudConfigured()) {
     return <>{children}</>;
   }
   return <WebAuthGate>{children}</WebAuthGate>;
 }
 
 function WebAuthGate({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [ready, setReady] = useState(false);
-  const [configError, setConfigError] = useState<string | null>(null);
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { user } = useUser();
+  const { signOut } = useClerk();
 
-  useEffect(() => {
-    let supabase;
-    try {
-      supabase = getSupabaseClient();
-    } catch (e) {
-      setConfigError(e instanceof Error ? e.message : String(e));
-      setReady(true);
-      return;
-    }
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        setSession(data.session);
-        setReady(true);
-      })
-      .catch(() => setReady(true));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  if (configError) return <ConfigErrorScreen message={configError} />;
-  if (!ready) return <CenteredMessage>Loading…</CenteredMessage>;
-  if (!session) return <LoginScreen />;
+  if (!isLoaded) return <CenteredMessage>Loading…</CenteredMessage>;
+  if (!isSignedIn) return <LoginScreen />;
 
   return (
     <AccountContext.Provider
       value={{
-        email: session.user.email ?? "",
-        signOut: () => void getSupabaseClient().auth.signOut(),
+        email: user?.primaryEmailAddress?.emailAddress ?? "",
+        isAdmin: user?.publicMetadata.role === "admin",
+        signOut: () => void signOut(),
+        getToken: () => getToken(),
       }}
     >
       {children}
@@ -144,8 +133,10 @@ function OtpBoxes({
 }
 
 // Passwordless email OTP (code, not link — institutional Safe Links prefetch
-// burns one-time link tokens). Invite-only: shouldCreateUser:false.
+// burns one-time link tokens). Invite-only: the Clerk instance runs in
+// restricted sign-up mode, so sending a code to an unknown email fails.
 function LoginScreen() {
+  const { signIn } = useSignIn();
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -160,45 +151,53 @@ function LoginScreen() {
   }, [cooldown]);
 
   const sendCode = useCallback(async (): Promise<boolean> => {
+    if (!signIn) return false;
     setSubmitting(true);
     setError(null);
     try {
-      const { error: otpError } = await getSupabaseClient().auth.signInWithOtp({
-        email: email.trim(),
-        options: { shouldCreateUser: false },
+      const { error: sendError } = await signIn.emailCode.sendCode({
+        emailAddress: email.trim(),
       });
-      if (otpError) {
-        setError(friendlyAuthError(otpError.message));
+      if (sendError) {
+        setError(friendlyAuthError(sendError));
         return false;
       }
       setCooldown(60);
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(friendlyAuthError(err));
       return false;
     } finally {
       setSubmitting(false);
     }
-  }, [email]);
+  }, [signIn, email]);
 
   const verify = useCallback(
     async (token: string) => {
+      if (!signIn) return;
       setSubmitting(true);
       setError(null);
       try {
-        const { error: verifyError } = await getSupabaseClient().auth.verifyOtp({
-          email: email.trim(),
-          token: token.trim(),
-          type: "email",
+        const { error: verifyError } = await signIn.emailCode.verifyCode({
+          code: token.trim(),
         });
-        if (verifyError) setError(friendlyAuthError(verifyError.message));
+        if (verifyError) {
+          setError(friendlyAuthError(verifyError));
+          return;
+        }
+        if (signIn.status === "complete") {
+          const { error: finalizeError } = await signIn.finalize();
+          if (finalizeError) setError(friendlyAuthError(finalizeError));
+        } else {
+          setError("Sign-in incomplete. Request a new code and try again.");
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(friendlyAuthError(err));
       } finally {
         setSubmitting(false);
       }
     },
-    [email],
+    [signIn],
   );
 
   if (step === "email") {
@@ -282,6 +281,7 @@ function LoginScreen() {
             type="button"
             className="auth-linkbtn"
             onClick={() => {
+              void signIn?.reset();
               setStep("email");
               setError(null);
             }}
@@ -302,37 +302,29 @@ function LoginScreen() {
   );
 }
 
-function friendlyAuthError(message: string): string {
-  const m = message.toLowerCase();
-  if (m.includes("signups not allowed") || m.includes("not allowed for otp")) {
+// Map Clerk error shapes/codes to labeler-friendly text. New-API methods return
+// a ClerkError ({ code, message }); legacy paths throw { errors: [{ code, ... }] }.
+function friendlyAuthError(err: unknown): string {
+  const direct = err as { code?: string; message?: string };
+  const legacy = err as { errors?: Array<{ code?: string; message?: string }> };
+  const first = legacy.errors?.[0] ?? direct;
+  const code = first?.code ?? "";
+  if (code === "form_identifier_not_found") {
     return "That email isn't on the team yet. Ask the admin to add you.";
   }
-  if (m.includes("rate limit") || m.includes("too many")) {
-    return "Too many requests. Wait a minute, then try again.";
-  }
-  if (m.includes("invalid") || m.includes("expired")) {
+  if (code === "form_code_incorrect" || code === "verification_expired") {
     return "That code is invalid or expired. Request a new one.";
   }
-  return message;
+  if (code === "too_many_requests") {
+    return "Too many requests. Wait a minute, then try again.";
+  }
+  return first?.message ?? (err instanceof Error ? err.message : String(err));
 }
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="auth-screen">
       <div className="auth-loading">{children}</div>
-    </div>
-  );
-}
-
-function ConfigErrorScreen({ message }: { message: string }) {
-  return (
-    <div className="auth-screen">
-      <div className="auth-card">
-        <h1 className="auth-title">HutLabel</h1>
-        <div className="auth-error" role="alert">
-          {message}
-        </div>
-      </div>
     </div>
   );
 }

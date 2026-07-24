@@ -2,10 +2,10 @@
 // per click but a re-sweep of 41 gigapixel orthos is not, so the schema is fixed
 // BEFORE anyone labels — changing it mid-project makes sites inconsistent. These
 // const tuples are the single source of truth for both the DB check constraints
-// (see supabase/migrations) and the attribute-panel dropdowns.
+// (Neon `orthos`/`huts` tables) and the attribute-panel dropdowns.
 //
-// Pure module (no React, no Supabase) so the value set and validation are
-// unit-testable and shared by the UI and the backend.
+// Pure module (no React, no I/O) so the value set and validation are
+// unit-testable and shared by the UI and the /api functions.
 
 export const STRUCTURE_TYPES = [
   "dwelling_hut",
