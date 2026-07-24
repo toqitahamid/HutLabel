@@ -59,6 +59,16 @@ export function hutCenter(hut: {
   return { cx: hut.x, cy: hut.y };
 }
 
+// Prefix marking a hut that exists only in local state, added optimistically
+// while its createHut request is in flight and not yet backed by a server
+// row. Mutating calls (PATCH/DELETE) against such an id would 404, so
+// callers check this before reaching for the backend.
+export const TEMP_HUT_PREFIX = "temp-";
+
+export function isTempHutId(id: string): boolean {
+  return id.startsWith(TEMP_HUT_PREFIX);
+}
+
 // The default attributes for a freshly dropped hut. The labeler adjusts them in
 // the panel; sensible defaults mean a fast "click, click, click" pass still
 // yields usable rows (the common case is a certain dwelling hut).

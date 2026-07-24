@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   STRUCTURE_TYPES,
+  TEMP_HUT_PREFIX,
   defaultAttributes,
   hutCenter,
+  isTempHutId,
   isValidAttributes,
   isValidBox,
   isValidPosition,
@@ -64,6 +66,15 @@ describe("isValidBox", () => {
     expect(isValidBox(0, 0, 10, -1, W, H)).toBe(false); // h < 0
     expect(isValidBox(W - 10, 0, 20, 10, W, H)).toBe(false); // x + w > width
     expect(isValidBox(0, 0, 10.5, 10, W, H)).toBe(false); // non-integer w
+  });
+});
+
+describe("isTempHutId", () => {
+  it("recognizes an optimistic-create id", () => {
+    expect(isTempHutId(`${TEMP_HUT_PREFIX}${crypto.randomUUID()}`)).toBe(true);
+  });
+  it("rejects a server-assigned uuid", () => {
+    expect(isTempHutId(crypto.randomUUID())).toBe(false);
   });
 });
 

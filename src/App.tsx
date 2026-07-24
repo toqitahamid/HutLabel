@@ -1,12 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import type { Ortho } from "./orthos";
-import { type Hut, type HutAttributes, defaultAttributes } from "./huts/model";
+import {
+  type Hut,
+  type HutAttributes,
+  TEMP_HUT_PREFIX,
+  defaultAttributes,
+  isTempHutId,
+} from "./huts/model";
 import { OrthoMap } from "./viewer/OrthoMap";
 import { AttributePanel } from "./huts/AttributePanel";
 import { makeHutBackend } from "./cloud/hut-backend";
 import { useAccount } from "./cloud/AuthGate";
 import { AdminPanel } from "./cloud/AdminPanel";
+import {
+  EMPTY_HISTORY,
+  dropEntry,
+  invertForRedo,
+  invertForUndo,
+  recordChange,
+  remapEntry,
+  remapHistory,
+  settleRedo,
+  settleUndo,
+  takeRedo,
+  takeUndo,
+  updateEntry,
+  type HistoryState,
+} from "./huts/history";
 
 // Global shortcuts must ignore keystrokes meant for a text field elsewhere in
 // the app (e.g. typing "c" while editing a hut's structure-type select
@@ -33,6 +54,8 @@ const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
     rows: [
       ["Draw box", "drag"],
       ["Hold to pan", "Space"],
+      ["Undo", "⌘Z"],
+      ["Redo", "⌘⇧Z"],
     ],
   },
   {
@@ -169,6 +192,10 @@ export default function App() {
   const [huts, setHuts] = useState<Hut[]>([]);
   const [selectedHutId, setSelectedHutId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Undo/redo stacks, scoped to the active ortho — cleared whenever it
+  // changes (see the huts-loading effect below), since entries reference hut
+  // ids that only make sense within that ortho's row set.
+  const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY);
 
   // Keyboard-help modal (`?`), and a reset-view "signal" that OrthoMap watches
   // (`0` shortcut) — a counter rather than a boolean so pressing it twice in a
@@ -205,6 +232,7 @@ export default function App() {
     let cancelled = false;
     setHuts([]);
     setSelectedHutId(null);
+    setHistory(EMPTY_HISTORY);
     backendRef.current
       .listHuts(activeOrtho.id)
       .then((rows) => {
@@ -262,12 +290,36 @@ export default function App() {
   }, [activeOrtho, expandSite]);
 
   // Drop a new hut at the placed native-pixel geometry, optimistically, then
-  // persist. On failure the optimistic row is rolled back so the map never
-  // lies. w/h are null for a point hut, set for a box hut.
+  // persist. A temp-id row renders immediately (and is auto-selected, same as
+  // the server-backed flow, so the attribute panel opens right away); once
+  // createHut resolves the temp row is swapped for the real one, carrying the
+  // selection across the id change. On failure the temp row is removed so the
+  // map never lies. w/h are null for a point hut, set for a box hut.
   const handlePlace = useCallback(
     async (x: number, y: number, w: number | null, h: number | null) => {
       if (!activeOrtho) return;
       const attrs = defaultAttributes();
+      const tempId = `${TEMP_HUT_PREFIX}${crypto.randomUUID()}`;
+      const tempHut: Hut = {
+        id: tempId,
+        ortho_id: activeOrtho.id,
+        x,
+        y,
+        w,
+        h,
+        ...attrs,
+        labeler_id: null,
+        created_at: null,
+      };
+      setHuts((prev) => [...prev, tempHut]);
+      setSelectedHutId(tempId);
+      // Pushed at the optimistic moment under the temp id, same as the huts
+      // array above; the entryId lets us find-and-fix it below regardless of
+      // where it ends up in the stack.
+      const entryId = crypto.randomUUID();
+      setHistory((h) =>
+        recordChange(h, { entryId, type: "create", hutId: tempId, snapshot: tempHut }),
+      );
       try {
         const hut = await backendRef.current.createHut(
           activeOrtho.id,
@@ -277,9 +329,17 @@ export default function App() {
           h,
           attrs,
         );
-        setHuts((prev) => [...prev, hut]);
-        setSelectedHutId(hut.id);
+        setHuts((cur) => cur.map((existing) => (existing.id === tempId ? hut : existing)));
+        setSelectedHutId((cur) => (cur === tempId ? hut.id : cur));
+        // Swap the temp id for the server id in the history entry too, so a
+        // later undo targets the real row instead of the vanished temp one.
+        setHistory((h) =>
+          updateEntry(h, entryId, (e) => ({ ...e, hutId: hut.id, snapshot: hut }) as typeof e),
+        );
       } catch (e) {
+        setHuts((cur) => cur.filter((existing) => existing.id !== tempId));
+        setSelectedHutId((cur) => (cur === tempId ? null : cur));
+        setHistory((h) => dropEntry(h, entryId));
         setError(e instanceof Error ? e.message : String(e));
       }
     },
@@ -288,15 +348,28 @@ export default function App() {
 
   const handleChangeAttrs = useCallback(
     async (attrs: HutAttributes) => {
-      if (!selectedHutId) return;
+      // Temp huts have no server row yet (createHut is still in flight) — a
+      // PATCH against a temp id would 404, so block edits until it resolves.
+      if (!selectedHutId || isTempHutId(selectedHutId)) return;
+      const target = huts.find((h) => h.id === selectedHutId);
+      if (!target) return;
+      const before: HutAttributes = {
+        structure_type: target.structure_type,
+        confidence: target.confidence,
+      };
       const prev = huts;
       setHuts((cur) =>
         cur.map((h) => (h.id === selectedHutId ? { ...h, ...attrs } : h)),
+      );
+      const entryId = crypto.randomUUID();
+      setHistory((h) =>
+        recordChange(h, { entryId, type: "attrs", hutId: selectedHutId, before, after: attrs }),
       );
       try {
         await backendRef.current.updateHut(selectedHutId, attrs);
       } catch (e) {
         setHuts(prev); // roll back
+        setHistory((h) => dropEntry(h, entryId));
         setError(e instanceof Error ? e.message : String(e));
       }
     },
@@ -307,14 +380,24 @@ export default function App() {
   // optimistic-then-revert exactly like handleChangeAttrs above.
   const handleEditBox = useCallback(
     async (id: string, x: number, y: number, w: number, h: number) => {
+      // Same temp-id guard as handleChangeAttrs above.
+      if (isTempHutId(id)) return;
+      const target = huts.find((hut) => hut.id === id);
+      if (!target || target.w == null || target.h == null) return;
+      const before = { x: target.x, y: target.y, w: target.w, h: target.h };
       const prev = huts;
       setHuts((cur) =>
         cur.map((hut) => (hut.id === id ? { ...hut, x, y, w, h } : hut)),
+      );
+      const entryId = crypto.randomUUID();
+      setHistory((hist) =>
+        recordChange(hist, { entryId, type: "box", hutId: id, before, after: { x, y, w, h } }),
       );
       try {
         await backendRef.current.updateHutBox(id, x, y, w, h);
       } catch (e) {
         setHuts(prev); // roll back
+        setHistory((hist) => dropEntry(hist, entryId));
         setError(e instanceof Error ? e.message : String(e));
       }
     },
@@ -322,18 +405,169 @@ export default function App() {
   );
 
   const handleDelete = useCallback(async () => {
-    if (!selectedHutId) return;
+    // Same temp-id guard as handleChangeAttrs above — also avoids racing the
+    // in-flight createHut, which would otherwise leave an orphaned server row
+    // once the swap in handlePlace finds no temp row left to replace.
+    if (!selectedHutId || isTempHutId(selectedHutId)) return;
+    const target = huts.find((h) => h.id === selectedHutId);
+    if (!target) return;
     const prev = huts;
     const id = selectedHutId;
     setHuts((cur) => cur.filter((h) => h.id !== id));
     setSelectedHutId(null);
+    const entryId = crypto.randomUUID();
+    setHistory((h) => recordChange(h, { entryId, type: "delete", hutId: id, snapshot: target }));
     try {
       await backendRef.current.deleteHut(id);
     } catch (e) {
       setHuts(prev); // roll back
+      setHistory((h) => dropEntry(h, entryId));
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [selectedHutId, huts]);
+
+  // Apply one history entry's inverse (undo: `invertForUndo`, redo:
+  // `invertForRedo`) to state + backend, optimistically. `recreate` always
+  // yields a new server id (INSERT, not a restore-by-id), so on success we
+  // remap every remaining entry in both stacks — and the selection — from
+  // the old id to the new one. `settle` moves the entry to the opposite
+  // stack; on failure the entry is simply left off both (already popped by
+  // `take*`), matching the drop-on-failure convention the four handlers use.
+  const handleUndo = useCallback(async () => {
+    const popped = takeUndo(history);
+    if (!popped) return;
+    const { entry, rest } = popped;
+    // A create entry carries a temp id until its createHut round-trip
+    // resolves (see handlePlace's updateEntry swap below) — same window
+    // where handleChangeAttrs/handleEditBox/handleDelete refuse to touch the
+    // hut. Leave the stack alone rather than popping an entry the in-flight
+    // create is still about to claim.
+    if (isTempHutId(entry.hutId)) return;
+    setHistory(rest);
+    const action = invertForUndo(entry);
+    if (action.kind === "remove") {
+      const prevHuts = huts;
+      setHuts((cur) => cur.filter((h) => h.id !== action.hutId));
+      setSelectedHutId((cur) => (cur === action.hutId ? null : cur));
+      try {
+        await backendRef.current.deleteHut(action.hutId);
+        setHistory((h) => settleUndo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else if (action.kind === "recreate") {
+      const oldId = action.snapshot.id;
+      try {
+        const newHut = await backendRef.current.createHut(
+          action.snapshot.ortho_id,
+          action.snapshot.x,
+          action.snapshot.y,
+          action.snapshot.w,
+          action.snapshot.h,
+          { structure_type: action.snapshot.structure_type, confidence: action.snapshot.confidence },
+        );
+        setHuts((cur) => [...cur, newHut]);
+        setSelectedHutId((cur) => (cur === oldId ? newHut.id : cur));
+        const remapped = remapEntry(entry, oldId, newHut.id);
+        setHistory((h) => settleUndo(remapHistory(h, oldId, newHut.id), remapped));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else if (action.kind === "setBox") {
+      const prevHuts = huts;
+      setHuts((cur) =>
+        cur.map((hut) =>
+          hut.id === action.hutId ? { ...hut, x: action.x, y: action.y, w: action.w, h: action.h } : hut,
+        ),
+      );
+      try {
+        await backendRef.current.updateHutBox(action.hutId, action.x, action.y, action.w, action.h);
+        setHistory((h) => settleUndo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      const prevHuts = huts;
+      setHuts((cur) =>
+        cur.map((hut) => (hut.id === action.hutId ? { ...hut, ...action.attrs } : hut)),
+      );
+      try {
+        await backendRef.current.updateHut(action.hutId, action.attrs);
+        setHistory((h) => settleUndo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, [history, huts]);
+
+  const handleRedo = useCallback(async () => {
+    const popped = takeRedo(history);
+    if (!popped) return;
+    const { entry, rest } = popped;
+    // Same in-flight-create guard as handleUndo above.
+    if (isTempHutId(entry.hutId)) return;
+    setHistory(rest);
+    const action = invertForRedo(entry);
+    if (action.kind === "remove") {
+      const prevHuts = huts;
+      setHuts((cur) => cur.filter((h) => h.id !== action.hutId));
+      setSelectedHutId((cur) => (cur === action.hutId ? null : cur));
+      try {
+        await backendRef.current.deleteHut(action.hutId);
+        setHistory((h) => settleRedo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else if (action.kind === "recreate") {
+      const oldId = action.snapshot.id;
+      try {
+        const newHut = await backendRef.current.createHut(
+          action.snapshot.ortho_id,
+          action.snapshot.x,
+          action.snapshot.y,
+          action.snapshot.w,
+          action.snapshot.h,
+          { structure_type: action.snapshot.structure_type, confidence: action.snapshot.confidence },
+        );
+        setHuts((cur) => [...cur, newHut]);
+        setSelectedHutId((cur) => (cur === oldId ? newHut.id : cur));
+        const remapped = remapEntry(entry, oldId, newHut.id);
+        setHistory((h) => settleRedo(remapHistory(h, oldId, newHut.id), remapped));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else if (action.kind === "setBox") {
+      const prevHuts = huts;
+      setHuts((cur) =>
+        cur.map((hut) =>
+          hut.id === action.hutId ? { ...hut, x: action.x, y: action.y, w: action.w, h: action.h } : hut,
+        ),
+      );
+      try {
+        await backendRef.current.updateHutBox(action.hutId, action.x, action.y, action.w, action.h);
+        setHistory((h) => settleRedo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      const prevHuts = huts;
+      setHuts((cur) =>
+        cur.map((hut) => (hut.id === action.hutId ? { ...hut, ...action.attrs } : hut)),
+      );
+      try {
+        await backendRef.current.updateHut(action.hutId, action.attrs);
+        setHistory((h) => settleRedo(h, entry));
+      } catch (e) {
+        setHuts(prevHuts);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, [history, huts]);
 
   // Global shortcuts: mode switches, per-hut attribute keys, ortho nav, reset
   // view, and the help modal. Space (hold-to-pan), Z (magnifier toggle) and
@@ -343,8 +577,24 @@ export default function App() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
-      if (e.metaKey || e.ctrlKey) return; // let Cmd/Ctrl shortcuts pass through
       if (adminPanelOpen) return; // the panel owns the keyboard (incl. its own Esc)
+
+      // Undo/redo: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, and Ctrl+Y (the common
+      // Windows/Linux redo binding). Checked ahead of the generic
+      // Cmd/Ctrl-passthrough below so this one combo is intercepted instead
+      // of falling through to the browser's own undo.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+        return;
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey) return; // let other Cmd/Ctrl shortcuts pass through
 
       // Esc: close the help modal first if it's open; otherwise deselect.
       if (e.key === "Escape") {
@@ -413,6 +663,8 @@ export default function App() {
     orthos,
     handleChangeAttrs,
     handleDelete,
+    handleUndo,
+    handleRedo,
   ]);
 
   return (
