@@ -68,15 +68,15 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
-export type OrthoMode = "box" | "point" | "pan";
-
 export type OrthoMapProps = {
   ortho: Ortho;
   huts: Hut[];
   selectedHutId: string | null;
-  mode: OrthoMode;
   onPlace: (x: number, y: number, w: number | null, h: number | null) => void;
   onSelectHut: (id: string) => void;
+  // Commits a resize of the SELECTED box hut's geometry (native px), fired
+  // once on corner-handle dragend — see the redraw effect below.
+  onEditBox: (id: string, x: number, y: number, w: number, h: number) => void;
   // DOM node (rendered by AttributePanel, at the top of the right rail) that
   // the magnifier panel + zoom-level slider portal into. Null until the first
   // paint's ref callback resolves it — the magnifier effect below re-runs
@@ -92,34 +92,45 @@ export function OrthoMap({
   ortho,
   huts,
   selectedHutId,
-  mode,
   onPlace,
   onSelectHut,
+  onEditBox,
   magnifierSlotEl,
   resetSignal,
 }: OrthoMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerLayerRef = useRef<L.LayerGroup | null>(null);
-  // Latest callbacks/flags without re-binding the map handlers (which would
+  // Latest callback without re-binding the map handlers (which would
   // otherwise force a map teardown just because a parent re-rendered).
   const onPlaceRef = useRef(onPlace);
-  const modeRef = useRef(mode);
   onPlaceRef.current = onPlace;
-  modeRef.current = mode;
+  const onEditBoxRef = useRef(onEditBox);
+  onEditBoxRef.current = onEditBox;
 
-  // Box-drag scratch state — a live preview rectangle plus the press-down
-  // corner, both native to the mousedown/mousemove/mouseup handlers below.
+  // Box-drag scratch state — a live preview rectangle (mirrored on the
+  // magnifier map so the draw is visible there too) plus the press-down
+  // corner, all native to the mousedown/mousemove/mouseup handlers below.
   const boxStartRef = useRef<L.LatLng | null>(null);
   const previewRectRef = useRef<L.Rectangle | null>(null);
+  const magPreviewRectRef = useRef<L.Rectangle | null>(null);
+  // Set by the map-build effect; lets the Space handler (a separate,
+  // mount-only effect) clear the live preview from both maps.
+  const clearPreviewRef = useRef<() => void>(() => {});
 
   // Hold-Space-to-pan: spaceHeldRef is read inside the mousedown/move/up box
-  // handlers and the [mode] dragging effect (both defined once, so they need
-  // a ref rather than the state to avoid stale closures); the state twin
-  // only exists to drive the cursor style on re-render.
+  // handlers (defined once, so they need a ref rather than the state to avoid
+  // stale closures); the state twin only exists to drive the cursor style on
+  // re-render.
   const spaceHeldRef = useRef(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [isDragging, setIsDragging] = useState(false); // grab vs grabbing
+
+  // True while a selected box hut's corner handle is being dragged (see the
+  // redraw effect below). Guards the box-drawing mousedown/mousemove/mouseup
+  // handlers the same way spaceHeldRef does, so grabbing a handle never also
+  // starts drawing a new box underneath it.
+  const editingHandleRef = useRef(false);
 
   // Magnifier: a second, independent Leaflet map over the same tile pyramid,
   // portaled into the right rail (see magnifierSlotEl) at the same position
@@ -206,65 +217,70 @@ export function OrthoMap({
     const markerLayer = L.layerGroup().addTo(map);
     markerLayerRef.current = markerLayer;
 
-    // Point mode: click places a point. Box mode finalizes on mouseup instead
-    // (see below) — Leaflet still fires a click after a non-dragging mouseup,
-    // so this must ignore anything but point mode or box mode would double-fire.
-    map.on("click", (e: L.LeafletMouseEvent) => {
-      if (modeRef.current !== "point") return;
-      // latlng -> native px at the reference zoom, rounded to the nearest pixel.
-      const p = map.project(e.latlng, max_level);
-      const x = Math.round(p.x);
-      const y = Math.round(p.y);
-      if (x < 0 || y < 0 || x >= width || y >= height) return; // clicked padding
-      onPlaceRef.current(x, y, null, null);
-    });
+    // Box drawing is the only labeling gesture, so native map dragging stays
+    // OFF and mousedown/mousemove/mouseup draw the box by hand; hold Space to
+    // pan instead (the keydown/keyup effect below temporarily re-enables
+    // dragging and cancels any box drag that was mid-flight).
+    map.dragging.disable();
 
-    // Box mode: draw a bounding box by hand since map.dragging is disabled for
-    // this mode (a separate effect toggles it) — mousedown/mousemove/mouseup
-    // stand in for what dragging would otherwise do. Holding Space suspends
-    // all three: Space wins over box mode so the user can pan without
-    // dropping a stray box (see the keydown/keyup effect below, which also
-    // cancels any drag that was already mid-flight when Space came down).
+    // Clear the live preview from BOTH maps (main + magnifier mirror).
+    const clearPreview = () => {
+      if (previewRectRef.current) {
+        previewRectRef.current.remove();
+        previewRectRef.current = null;
+      }
+      if (magPreviewRectRef.current) {
+        magPreviewRectRef.current.remove();
+        magPreviewRectRef.current = null;
+      }
+    };
+    clearPreviewRef.current = clearPreview;
+
     map.on("mousedown", (e: L.LeafletMouseEvent) => {
-      if (modeRef.current !== "box" || spaceHeldRef.current) return;
+      if (spaceHeldRef.current || editingHandleRef.current) return;
+      // The map's own "mousedown" fires BEFORE a marker's "dragstart" (that
+      // only fires once Leaflet's Draggable recognizes real movement), so
+      // editingHandleRef isn't set yet on the very press that starts a handle
+      // drag — check the DOM target directly so that press never arms
+      // box-drawing.
+      if ((e.originalEvent.target as HTMLElement | null)?.closest?.(".box-handle")) return;
       if (e.originalEvent.button !== 0) return; // left button only
       boxStartRef.current = e.latlng;
     });
 
     map.on("mousemove", (e: L.LeafletMouseEvent) => {
-      if (
-        modeRef.current !== "box" ||
-        !boxStartRef.current ||
-        spaceHeldRef.current
-      )
-        return;
+      if (!boxStartRef.current || spaceHeldRef.current || editingHandleRef.current) return;
       const previewBounds = L.latLngBounds(boxStartRef.current, e.latlng);
+      const style = {
+        color: "#ffffff",
+        weight: 1.5,
+        fillOpacity: 0.08,
+        dashArray: "4 3",
+        interactive: false, // overlay only — never steal the mouseup below it
+      } as const;
       if (previewRectRef.current) {
         previewRectRef.current.setBounds(previewBounds);
       } else {
-        previewRectRef.current = L.rectangle(previewBounds, {
-          color: "#ffffff",
-          weight: 1.5,
-          fillOpacity: 0.08,
-          dashArray: "4 3",
-          interactive: false, // overlay only — never steal the mouseup below it
-        }).addTo(map);
+        previewRectRef.current = L.rectangle(previewBounds, style).addTo(map);
+      }
+      // Mirror the draw on the magnifier so the box is visible there too. Both
+      // maps share CRS.Simple + the same reference zoom, so the LatLng bounds
+      // transfer as-is.
+      const mag = magnifierMapRef.current;
+      if (mag && magnifierOnRef.current) {
+        if (magPreviewRectRef.current) {
+          magPreviewRectRef.current.setBounds(previewBounds);
+        } else {
+          magPreviewRectRef.current = L.rectangle(previewBounds, style).addTo(mag);
+        }
       }
     });
 
     map.on("mouseup", (e: L.LeafletMouseEvent) => {
-      if (
-        modeRef.current !== "box" ||
-        !boxStartRef.current ||
-        spaceHeldRef.current
-      )
-        return;
+      if (!boxStartRef.current || spaceHeldRef.current || editingHandleRef.current) return;
       const start = boxStartRef.current;
       boxStartRef.current = null;
-      if (previewRectRef.current) {
-        previewRectRef.current.remove();
-        previewRectRef.current = null;
-      }
+      clearPreview();
       const p1 = map.project(start, max_level);
       const p2 = map.project(e.latlng, max_level);
       // Clamp EACH corner into the image extent first, then derive x/y/w/h —
@@ -288,16 +304,13 @@ export function OrthoMap({
     // the in-progress drag on mouseout so the preview doesn't keep tracking
     // the cursor after it re-enters.
     map.on("mouseout", () => {
-      if (modeRef.current !== "box" || !boxStartRef.current) return;
+      if (!boxStartRef.current) return;
       boxStartRef.current = null;
-      if (previewRectRef.current) {
-        previewRectRef.current.remove();
-        previewRectRef.current = null;
-      }
+      clearPreview();
     });
 
-    // Cursor feedback: "grabbing" while any native Leaflet drag is active
-    // (pan mode, or box mode with Space held), "grab" the rest of the time.
+    // Cursor feedback: "grabbing" while a Space-held pan drag is active,
+    // "grab" the rest of the hold.
     map.on("dragstart", () => setIsDragging(true));
     map.on("dragend", () => setIsDragging(false));
 
@@ -349,6 +362,8 @@ export function OrthoMap({
       markerLayerRef.current = null;
       boxStartRef.current = null;
       previewRectRef.current = null;
+      magPreviewRectRef.current = null;
+      clearPreviewRef.current = () => {};
       latestLatLngRef.current = null;
       rafPendingRef.current = false;
     };
@@ -426,42 +441,20 @@ export function OrthoMap({
       cancelAnimationFrame(raf);
       magnifier.remove();
       magnifierMapRef.current = null;
+      magPreviewRectRef.current = null; // died with its map
     };
   }, [ortho, magnifierSlotEl]);
 
-  // Box mode needs hand-rolled dragging (mousedown/move/up above draw the box);
-  // pan and point mode both want native map dragging so panning still works.
-  // While Space is held, the keydown/keyup effect below owns map.dragging —
-  // skip here so a mode switch mid-hold (e.g. a hotkey) can't fight it; on
-  // release that effect hands control back by re-running this same logic.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (spaceHeldRef.current) return;
-    if (mode === "box") {
-      map.dragging.disable();
-    } else {
-      map.dragging.enable();
-    }
-  }, [mode]);
-
   // Hold-Space-to-pan, plus a Z toggle for the magnifier panel. One
-  // mount-only listener pair — everything it touches (mapRef, modeRef,
-  // boxStartRef, previewRectRef) is a ref, so it never goes stale.
+  // mount-only listener pair — everything it touches (mapRef, boxStartRef,
+  // clearPreviewRef) is a ref, so it never goes stale.
   useEffect(() => {
     // Undoing a hut edit is Cmd/Ctrl+Z; back/forward nav is often Cmd+[ / ].
     // Space needs no such guard (nothing else binds a bare Space).
     function restoreFromSpaceHold() {
       spaceHeldRef.current = false;
       setSpaceHeld(false);
-      const map = mapRef.current;
-      if (map) {
-        if (modeRef.current === "box") {
-          map.dragging.disable();
-        } else {
-          map.dragging.enable();
-        }
-      }
+      mapRef.current?.dragging.disable(); // back to box-drawing
     }
     function onKeyDown(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
@@ -474,10 +467,7 @@ export function OrthoMap({
         // A box drag that was mid-flight when Space came down must not
         // survive: releasing the mouse after a Space-pan shouldn't drop it.
         boxStartRef.current = null;
-        if (previewRectRef.current) {
-          previewRectRef.current.remove();
-          previewRectRef.current = null;
-        }
+        clearPreviewRef.current();
         return;
       }
       const cmd = e.metaKey || e.ctrlKey;
@@ -556,6 +546,106 @@ export function OrthoMap({
           onSelectHut(hut.id);
         });
         rect.addTo(layer);
+
+        // The selected box hut gets 4 draggable corner handles so it can be
+        // resized in place. Only ever drawn for ONE hut (the selection), and
+        // torn down with everything else on the next layer.clearLayers().
+        if (selected) {
+          const hutX = hut.x;
+          const hutY = hut.y;
+          const hutW = hut.w;
+          const hutH = hut.h;
+          type Corner = "NW" | "NE" | "SW" | "SE";
+          const cornerPx: Record<Corner, [number, number]> = {
+            NW: [hutX, hutY],
+            NE: [hutX + hutW, hutY],
+            SW: [hutX, hutY + hutH],
+            SE: [hutX + hutW, hutY + hutH],
+          };
+          const oppositeOf: Record<Corner, Corner> = {
+            NW: "SE",
+            NE: "SW",
+            SW: "NE",
+            SE: "NW",
+          };
+          const handles = {} as Record<Corner, L.Marker>;
+          // The corner LatLng that stays put for the current drag gesture —
+          // computed at dragstart from the hut's STORED geometry (not the
+          // live handle position), and read by both this handle's "drag"
+          // ticks and its "dragend" commit.
+          let fixedCornerLatLng: L.LatLng | null = null;
+
+          (Object.keys(cornerPx) as Corner[]).forEach((corner) => {
+            const ll = map.unproject(cornerPx[corner], ortho.max_level);
+            const marker = L.marker(ll, {
+              draggable: true,
+              icon: L.divIcon({
+                className: "box-handle",
+                iconSize: [10, 10],
+                iconAnchor: [5, 5],
+              }),
+            });
+            handles[corner] = marker;
+
+            marker.on("dragstart", () => {
+              // Defensively clear any box-draw already armed by the
+              // mousedown that preceded this dragstart (see the ".box-handle"
+              // target check above — belt-and-suspenders against the same
+              // event-ordering hazard, including the tail case where a stray
+              // "mouseup" lands after a "dragend" already reset the guard).
+              boxStartRef.current = null;
+              clearPreviewRef.current();
+              editingHandleRef.current = true;
+              const [ox, oy] = cornerPx[oppositeOf[corner]];
+              fixedCornerLatLng = map.unproject([ox, oy], ortho.max_level);
+            });
+
+            // Live-update the rectangle and all 4 handles from
+            // [fixedCornerLatLng, the dragged handle's current position] —
+            // simplest way to keep the visual a coherent rectangle without
+            // tracking each handle's motion individually.
+            marker.on("drag", () => {
+              if (!fixedCornerLatLng) return;
+              const bounds = L.latLngBounds(fixedCornerLatLng, marker.getLatLng());
+              rect.setBounds(bounds);
+              handles.NW.setLatLng(bounds.getNorthWest());
+              handles.NE.setLatLng(bounds.getNorthEast());
+              handles.SW.setLatLng(bounds.getSouthWest());
+              handles.SE.setLatLng(bounds.getSouthEast());
+            });
+
+            marker.on("dragend", () => {
+              editingHandleRef.current = false; // re-arm box-drawing first
+              if (!fixedCornerLatLng) return;
+              const p1 = map.project(fixedCornerLatLng, ortho.max_level);
+              const p2 = map.project(marker.getLatLng(), ortho.max_level);
+              // Same clamp-then-derive order as the box-draw mouseup handler
+              // above: clamp EACH corner into the image extent first, so a
+              // drag that ends offscreen shrinks the box instead of the far
+              // corner chasing it.
+              const cx1 = Math.max(0, Math.min(p1.x, ortho.width));
+              const cy1 = Math.max(0, Math.min(p1.y, ortho.height));
+              const cx2 = Math.max(0, Math.min(p2.x, ortho.width));
+              const cy2 = Math.max(0, Math.min(p2.y, ortho.height));
+              const x = Math.round(Math.min(cx1, cx2));
+              const y = Math.round(Math.min(cy1, cy2));
+              const w = Math.round(Math.abs(cx2 - cx1));
+              const h = Math.round(Math.abs(cy2 - cy1));
+              if (w < MIN_BOX_PX || h < MIN_BOX_PX) {
+                // Degenerate resize (accidental nudge) — don't commit.
+                // Re-submitting the hut's ORIGINAL geometry is a no-op at
+                // the backend but still bumps the huts array identity, which
+                // re-runs this effect and snaps the rect/handles back.
+                onEditBoxRef.current(hut.id, hutX, hutY, hutW, hutH);
+              } else {
+                onEditBoxRef.current(hut.id, x, y, w, h);
+              }
+              fixedCornerLatLng = null;
+            });
+
+            marker.addTo(layer);
+          });
+        }
       } else {
         const ll = map.unproject([hut.x, hut.y], ortho.max_level);
         const marker = L.circleMarker(ll, {
@@ -574,14 +664,9 @@ export function OrthoMap({
     }
   }, [huts, selectedHutId, ortho.max_level]);
 
-  // Cursor hints what's active: Space always wins (grab/grabbing over
-  // whatever the mode would normally show), pan mode is grab/grabbing on its
-  // own, box/point fall back to the mode's static crosshair.
-  const cursor = spaceHeld || mode === "pan"
-    ? isDragging
-      ? "grabbing"
-      : "grab"
-    : "crosshair";
+  // Cursor hints what's active: grab/grabbing while Space-panning, the
+  // box-drawing crosshair the rest of the time.
+  const cursor = spaceHeld ? (isDragging ? "grabbing" : "grab") : "crosshair";
 
   // The magnifier panel + its zoom-level slider, portaled into AttributePanel's
   // right rail at magnifierSlotEl — the same top-of-rail position FlagLabel's

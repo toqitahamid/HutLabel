@@ -285,8 +285,16 @@
 .ortho-map {
   position: absolute;
   inset: 0;
+  /* Own stacking context: caps Leaflet's pane z-indexes (200-700) so siblings
+     like the mode toolbar and error banner layer by THEIR z-index, not the
+     panes'. */
+  z-index: 0;
 }
-.leaflet-container {
+/* Scoped so this outranks leaflet.css's own `.leaflet-container { background:
+   #ddd }` (imported after this file), which otherwise paints the area outside
+   the image bounds white. */
+.ortho-map.leaflet-container,
+.zoom-panel-map.leaflet-container {
   background: var(--bg-zoom);
   height: 100%;
   width: 100%;
@@ -298,44 +306,16 @@
   color: var(--text-tertiary);
 }
 
-/* Mode toolbar: top-right, clear of the Leaflet zoom control (top-left) and
-   the centered error banner (top-center). */
-.mode-toolbar {
-  position: absolute;
-  z-index: 500;
-  top: 12px;
-  right: 12px;
-}
-.mode-toolbar.segmented {
-  display: flex;
-  gap: 2px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: 3px;
-}
-.mode-toolbar .segmented-btn {
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 14px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background-color var(--transition-fast) ease,
-    color var(--transition-fast) ease;
-}
-.mode-toolbar .segmented-btn:hover {
-  color: var(--text-primary);
-}
-.mode-toolbar .segmented-btn.active {
-  background: var(--accent);
-  color: var(--bg-app);
-  font-weight: 600;
-}
-.mode-toolbar .segmented-btn:active {
-  transform: scale(0.98);
+/* Corner-resize handle on the selected box hut (OrthoMap's divIcon markers).
+   Leaflet positions it via the icon's iconAnchor; no position rules here. */
+.box-handle {
+  width: 10px;
+  height: 10px;
+  background: #ffffff;
+  border: 1px solid #0c0c0d;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  cursor: nwse-resize;
 }
 
 /* Magnifier: a second Leaflet map, portaled from OrthoMap into the top of
@@ -360,11 +340,14 @@
 .zoom-panel-map {
   position: absolute;
   inset: 0;
+  /* Own stacking context: caps the magnifier's Leaflet pane z-indexes (200-700)
+     so the crosshair's z-index 3 actually wins over the tiles. */
+  z-index: 0;
 }
 .zoom-crosshair {
   position: absolute;
   inset: 0;
-  z-index: 3; /* above the magnifier's Leaflet tile panes */
+  z-index: 3; /* above .zoom-panel-map (see its stacking-context note) */
   pointer-events: none;
 }
 .zoom-crosshair-seg {
@@ -761,4 +744,149 @@
   .help-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Modal vocabulary (shared with FlagLabel: upload-overlay/upload-modal) ── */
+.upload-overlay {
+  position: fixed;
+  inset: 0;
+  /* Above Leaflet's panes (z 400-700); FlagLabel's 80 predates the map viewer. */
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.upload-modal {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+.upload-modal-head {
+  padding: 16px 18px 10px;
+}
+.upload-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.upload-modal-sub {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+.upload-modal-body {
+  padding: 0 18px;
+  overflow-y: auto;
+}
+.upload-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 12px;
+}
+.upload-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.upload-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── Admin user-management panel ─────────────────────────────────────── */
+.admin-modal {
+  width: min(680px, 92vw);
+}
+.admin-addrow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.admin-email-input {
+  flex: 1 1 auto;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.admin-email-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.admin-role-select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.admin-hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.admin-empty {
+  padding: 18px 0;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.admin-userlist {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
+}
+.admin-userrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.admin-uemail {
+  flex: 1 1 auto;
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-self {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.admin-ulast {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.admin-remove {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: #e06a6a;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.admin-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.admin-remove:not(:disabled):hover {
+  background: rgba(224, 106, 106, 0.12);
 }

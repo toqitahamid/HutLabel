@@ -2,20 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import type { Ortho } from "./orthos";
 import { type Hut, type HutAttributes, defaultAttributes } from "./huts/model";
-import { OrthoMap, type OrthoMode } from "./viewer/OrthoMap";
+import { OrthoMap } from "./viewer/OrthoMap";
 import { AttributePanel } from "./huts/AttributePanel";
 import { makeHutBackend } from "./cloud/hut-backend";
 import { useAccount } from "./cloud/AuthGate";
-
-const MODES: { id: OrthoMode; label: string }[] = [
-  { id: "pan", label: "Pan" },
-  { id: "point", label: "Point" },
-  { id: "box", label: "Box" },
-];
+import { AdminPanel } from "./cloud/AdminPanel";
 
 // Global shortcuts must ignore keystrokes meant for a text field elsewhere in
-// the app (e.g. typing "b" while editing a hut's structure-type select
-// shouldn't switch to box mode). Same guard OrthoMap uses for its own keys
+// the app (e.g. typing "c" while editing a hut's structure-type select
+// shouldn't toggle confidence). Same guard OrthoMap uses for its own keys
 // (Space, Z, [ / ]), kept in lockstep so no input field is ever shadowed.
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -34,19 +29,10 @@ function isEditableTarget(target: EventTarget | null): boolean {
 // part of the app's one shortcut surface from the labeler's point of view.
 const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
   {
-    title: "Modes",
+    title: "Labeling",
     rows: [
-      ["Box", "B"],
-      ["Point", "P"],
-      ["Pan", "V"],
+      ["Draw box", "drag"],
       ["Hold to pan", "Space"],
-    ],
-  },
-  {
-    title: "Placement",
-    rows: [
-      ["Draw box (box mode)", "drag"],
-      ["Drop point (point mode)", "click"],
     ],
   },
   {
@@ -108,10 +94,9 @@ function KeyboardHelp({ onClose }: { onClose: () => void }) {
         </div>
 
         <p className="help-intro">
-          Choose Box or Point mode, then draw or click on the map to drop a
-          hut. Set its structure type and confidence from the keyboard or the
-          right rail — the magnifier and shortcuts below stay live the whole
-          time.
+          Drag on the map to draw a box around a hut (hold Space to pan). Set
+          its structure type and confidence from the keyboard or the right
+          rail — the magnifier and shortcuts below stay live the whole time.
         </p>
 
         <div className="help-grid">
@@ -174,21 +159,23 @@ function VisitIcon({ className }: { className?: string }) {
 }
 
 export default function App() {
-  const backendRef = useRef(makeHutBackend());
   const account = useAccount();
+  // Constructed once on mount; `account` is stable by then (App only renders
+  // inside a signed-in AuthGate in cloud mode, pass-through in local dev).
+  const backendRef = useRef(makeHutBackend(account?.getToken ?? null));
 
   const [orthos, setOrthos] = useState<Ortho[]>([]);
   const [activeOrtho, setActiveOrtho] = useState<Ortho | null>(null);
   const [huts, setHuts] = useState<Hut[]>([]);
   const [selectedHutId, setSelectedHutId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Box is the default — it doubles as a detection label and a SAM prompt.
-  const [mode, setMode] = useState<OrthoMode>("box");
 
   // Keyboard-help modal (`?`), and a reset-view "signal" that OrthoMap watches
   // (`0` shortcut) — a counter rather than a boolean so pressing it twice in a
   // row (already reset) still re-fits the view each time.
   const [helpOpen, setHelpOpen] = useState(false);
+  // Web-only admin user-management panel (gated on account.isAdmin in the titlebar).
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
 
   // OrthoMap's magnifier portals its panel + zoom-level slider into this DOM
@@ -316,6 +303,24 @@ export default function App() {
     [selectedHutId, huts],
   );
 
+  // Corner-handle resize of the selected box hut (OrthoMap's onEditBox),
+  // optimistic-then-revert exactly like handleChangeAttrs above.
+  const handleEditBox = useCallback(
+    async (id: string, x: number, y: number, w: number, h: number) => {
+      const prev = huts;
+      setHuts((cur) =>
+        cur.map((hut) => (hut.id === id ? { ...hut, x, y, w, h } : hut)),
+      );
+      try {
+        await backendRef.current.updateHutBox(id, x, y, w, h);
+      } catch (e) {
+        setHuts(prev); // roll back
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [huts],
+  );
+
   const handleDelete = useCallback(async () => {
     if (!selectedHutId) return;
     const prev = huts;
@@ -339,6 +344,7 @@ export default function App() {
     function onKeyDown(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
       if (e.metaKey || e.ctrlKey) return; // let Cmd/Ctrl shortcuts pass through
+      if (adminPanelOpen) return; // the panel owns the keyboard (incl. its own Esc)
 
       // Esc: close the help modal first if it's open; otherwise deselect.
       if (e.key === "Escape") {
@@ -350,19 +356,6 @@ export default function App() {
       if (e.key === "?" || (e.shiftKey && e.key === "/")) {
         e.preventDefault();
         setHelpOpen(true);
-        return;
-      }
-
-      if (e.key === "b" || e.key === "B") {
-        setMode("box");
-        return;
-      }
-      if (e.key === "p" || e.key === "P") {
-        setMode("point");
-        return;
-      }
-      if (e.key === "v" || e.key === "V") {
-        setMode("pan");
         return;
       }
 
@@ -413,6 +406,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     helpOpen,
+    adminPanelOpen,
     selectedHut,
     selectedHutId,
     activeOrtho,
@@ -448,7 +442,20 @@ export default function App() {
               <span className="title-account-email" title={account.email}>
                 {account.email}
               </span>
-              <button className="title-btn ghost" onClick={account.signOut}>
+              {account.isAdmin && (
+                <button
+                  className="title-btn ghost"
+                  onClick={() => setAdminPanelOpen(true)}
+                  title="Manage users"
+                >
+                  Admin
+                </button>
+              )}
+              <button
+                className="title-btn ghost"
+                onClick={account.signOut}
+                title="Sign out of HutLabel"
+              >
                 Sign out
               </button>
             </span>
@@ -522,30 +529,17 @@ export default function App() {
           </div>
         )}
         {activeOrtho ? (
-          <>
-            <div className="mode-toolbar segmented">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  className={"segmented-btn" + (mode === m.id ? " active" : "")}
-                  onClick={() => setMode(m.id)}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-            <OrthoMap
-              key={activeOrtho.id}
-              ortho={activeOrtho}
-              huts={huts}
-              selectedHutId={selectedHutId}
-              mode={mode}
-              onPlace={handlePlace}
-              onSelectHut={setSelectedHutId}
-              magnifierSlotEl={zoomSlotEl}
-              resetSignal={resetNonce}
-            />
-          </>
+          <OrthoMap
+            key={activeOrtho.id}
+            ortho={activeOrtho}
+            huts={huts}
+            selectedHutId={selectedHutId}
+            onPlace={handlePlace}
+            onSelectHut={setSelectedHutId}
+            onEditBox={handleEditBox}
+            magnifierSlotEl={zoomSlotEl}
+            resetSignal={resetNonce}
+          />
         ) : (
           <div className="stage-empty">
             {error ? "Could not load orthos." : "No ortho selected."}
@@ -562,6 +556,9 @@ export default function App() {
       />
 
       {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
+      {adminPanelOpen && account && (
+        <AdminPanel account={account} onClose={() => setAdminPanelOpen(false)} />
+      )}
     </div>
   );
 }
