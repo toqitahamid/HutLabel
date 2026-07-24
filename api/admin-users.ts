@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClerkClient } from "@clerk/backend";
-import { requireUser } from "./_lib";
+import { requireUser } from "./_lib.js";
 
 // Admin user management (FlagLabel's `admin-users` Edge Function, ported to a
 // Vercel function + Clerk Backend API). Action-based POST endpoint; the browser

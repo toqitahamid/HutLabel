@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireUser, sql } from "./_lib";
+import { requireUser, sql } from "./_lib.js";
 
 // GET /api/orthos — the ortho catalog, admin-seeded via scripts/seed-orthos.
 export default async function handler(req: VercelRequest, res: VercelResponse) {

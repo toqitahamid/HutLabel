@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { isValidAttributes, type HutAttributes } from "../../src/huts/model";
-import { requireUser, sql } from "../_lib";
+import { isValidAttributes, type HutAttributes } from "../../src/huts/model.js";
+import { requireUser, sql } from "../_lib.js";
 
 // PATCH  /api/huts/:id — update attributes (any signed-in labeler, FlagLabel's
 //                        shared-oversight model: the PI can fix anyone's label).

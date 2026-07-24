@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { isValidAttributes, type HutAttributes } from "../../src/huts/model";
-import { requireUser, sql } from "../_lib";
+import { isValidAttributes, type HutAttributes } from "../../src/huts/model.js";
+import { requireUser, sql } from "../_lib.js";
 
 // GET  /api/huts?ortho_id=... — all huts on one ortho (any signed-in labeler).
 // POST /api/huts             — insert one hut; labeler_id comes from the token.

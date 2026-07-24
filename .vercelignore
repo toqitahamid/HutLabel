@@ -1,0 +1,12 @@
+data
+node_modules
+dist
+public/tiles
+.env
+.env.local
+*.local
+.DS_Store
+.serena
+.agents
+.claude
+scripts/demo_pyramid.json
