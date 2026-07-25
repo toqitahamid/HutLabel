@@ -127,6 +127,9 @@
 }
 
 .folder-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -139,7 +142,6 @@
 }
 
 .folder-meta {
-  margin-top: 2px;
   font-size: 10px;
   color: var(--text-tertiary);
 }
