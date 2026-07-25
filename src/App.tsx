@@ -682,35 +682,64 @@ export default function App() {
         <div className="title-actions">
           <button
             type="button"
-            className="title-btn ghost"
+            className="key-btn"
+            onClick={handleUndo}
+            disabled={history.undoStack.length === 0}
+            title="Undo (⌘Z)"
+            aria-label="Undo"
+          >
+            <kbd className="key-cap">⌘Z</kbd>
+            <span>Undo</span>
+          </button>
+          <button
+            type="button"
+            className="key-btn"
+            onClick={handleRedo}
+            disabled={history.redoStack.length === 0}
+            title="Redo (⌘⇧Z)"
+            aria-label="Redo"
+          >
+            <kbd className="key-cap">⌘⇧Z</kbd>
+            <span>Redo</span>
+          </button>
+          <span className="title-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="key-btn"
             onClick={() => setHelpOpen(true)}
             title="Keyboard shortcuts (?)"
             aria-label="Keyboard shortcuts"
           >
-            ?
+            <kbd className="key-cap">?</kbd>
+            <span>Help</span>
           </button>
           {account && (
-            <span className="title-account">
-              <span className="title-account-email" title={account.email}>
-                {account.email}
-              </span>
-              {account.isAdmin && (
+            <>
+              <span className="title-divider" aria-hidden="true" />
+              <span className="title-account">
+                <span className="title-account-email" title={account.email}>
+                  {account.email}
+                </span>
+                {account.isAdmin && (
+                  <button
+                    type="button"
+                    className="key-btn"
+                    onClick={() => setAdminPanelOpen(true)}
+                    title="Manage users"
+                  >
+                    <span>Admin</span>
+                  </button>
+                )}
                 <button
-                  className="title-btn ghost"
-                  onClick={() => setAdminPanelOpen(true)}
-                  title="Manage users"
+                  type="button"
+                  className="key-btn"
+                  onClick={account.signOut}
+                  title="Sign out of HutLabel"
                 >
-                  Admin
+                  <span>Sign out</span>
                 </button>
-              )}
-              <button
-                className="title-btn ghost"
-                onClick={account.signOut}
-                title="Sign out of HutLabel"
-              >
-                Sign out
-              </button>
-            </span>
+              </span>
+            </>
           )}
         </div>
       </header>

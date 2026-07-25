@@ -64,11 +64,20 @@
   flex-shrink: 0;
 }
 
-.title-btn {
+.title-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.key-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font: inherit;
-  font-size: 11px;
   padding: 4px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);
@@ -77,25 +86,40 @@
     color var(--transition-fast) ease, border-color var(--transition-fast) ease;
 }
 
-.title-btn:hover {
+.key-btn:hover:not(:disabled) {
   background: var(--bg-surface);
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
 
-.title-btn:active {
+.key-btn:hover:not(:disabled) .key-cap {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.key-btn:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-.title-btn.ghost {
-  background: transparent;
-  border-color: transparent;
+.key-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.title-btn.ghost:hover {
-  background: var(--bg-elevated);
-  border-color: var(--border-subtle);
-  color: var(--text-primary);
+.key-btn span {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.key-cap {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
 }
 
 .title-account {
