@@ -4,6 +4,7 @@ import {
   addUser,
   setRole,
   removeUser,
+  revokeInvite,
   isValidEmail,
   type AdminUser,
   type Role,
@@ -11,7 +12,7 @@ import {
 import type { Account } from "./AuthGate";
 
 // Admin-only user management for the web build (FlagLabel's AdminPanel). Lists
-// users, adds a new one by email, toggles role, and removes. All privileged
+// users, invites new people by email, toggles role, and removes. All privileged
 // work happens in the `/api/admin-users` function; this component only calls
 // the client wrapper and reflects loading/error state. Styling uses the shared
 // modal vocabulary (`upload-overlay`, `btn`) plus `admin-*` classes in App.css.
@@ -123,12 +124,31 @@ export function AdminPanel(props: AdminPanelProps) {
     [getToken, refresh],
   );
 
+  const onRevoke = useCallback(
+    async (u: AdminUser) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await revokeInvite(getToken, u.id);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [getToken, refresh],
+  );
+
   const onBackdropClick = useCallback(
     (e: React.MouseEvent) => {
       if (e.target === e.currentTarget && !busy) onClose();
     },
     [busy, onClose],
   );
+
+  const activeCount = users.filter((u) => u.status === "active").length;
+  const invitedCount = users.length - activeCount;
 
   return (
     <div
@@ -179,8 +199,8 @@ export function AdminPanel(props: AdminPanelProps) {
           </div>
 
           <p className="admin-hint">
-            New users get no email. Tell them to visit HutLabel and sign in with
-            their email to receive a login code.
+            Adding someone sends them an email invitation to join HutLabel.
+            Pending invites appear below until accepted.
           </p>
 
           {error && (
@@ -197,42 +217,58 @@ export function AdminPanel(props: AdminPanelProps) {
             <div className="admin-userlist">
               {users.map((u) => {
                 const isSelf = u.email.toLowerCase() === currentEmail.toLowerCase();
+                const isInvited = u.status === "invited";
                 return (
                   <div className="admin-userrow" key={u.id}>
                     <span className="admin-uemail">
                       {u.email}
                       {isSelf && <span className="admin-self"> (you)</span>}
                     </span>
+                    {isInvited && <span className="admin-badge">Invited</span>}
                     <span className="admin-ulast">
-                      last seen {formatLastSeen(u.last_seen_at)}
+                      {isInvited ? "—" : `last seen ${formatLastSeen(u.last_seen_at)}`}
                     </span>
-                    <select
-                      className="admin-role-select"
-                      value={u.role ?? "user"}
-                      disabled={busy || isSelf}
-                      onChange={(e) =>
-                        void onChangeRole(u, e.target.value as Role)
-                      }
-                      title={
-                        isSelf ? "You can't change your own role" : "Change role"
-                      }
-                    >
-                      <option value="user">user</option>
-                      <option value="admin">admin</option>
-                    </select>
-                    <button
-                      type="button"
-                      className="admin-remove"
-                      disabled={busy || isSelf}
-                      onClick={() => void onRemove(u)}
-                      title={
-                        isSelf
-                          ? "You can't remove yourself"
-                          : `Remove ${u.email}`
-                      }
-                    >
-                      Remove
-                    </button>
+                    {isInvited ? (
+                      <button
+                        type="button"
+                        className="admin-remove"
+                        disabled={busy}
+                        onClick={() => void onRevoke(u)}
+                        title={`Revoke invitation for ${u.email}`}
+                      >
+                        Revoke
+                      </button>
+                    ) : (
+                      <>
+                        <select
+                          className="admin-role-select"
+                          value={u.role ?? "user"}
+                          disabled={busy || isSelf}
+                          onChange={(e) =>
+                            void onChangeRole(u, e.target.value as Role)
+                          }
+                          title={
+                            isSelf ? "You can't change your own role" : "Change role"
+                          }
+                        >
+                          <option value="user">user</option>
+                          <option value="admin">admin</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="admin-remove"
+                          disabled={busy || isSelf}
+                          onClick={() => void onRemove(u)}
+                          title={
+                            isSelf
+                              ? "You can't remove yourself"
+                              : `Remove ${u.email}`
+                          }
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -242,7 +278,8 @@ export function AdminPanel(props: AdminPanelProps) {
 
         <div className="upload-modal-foot">
           <span className="upload-count">
-            {users.length} user{users.length === 1 ? "" : "s"}
+            {activeCount} user{activeCount === 1 ? "" : "s"}
+            {invitedCount > 0 ? `, ${invitedCount} invited` : ""}
           </span>
           <span className="upload-actions">
             <button
