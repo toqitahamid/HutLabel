@@ -304,6 +304,16 @@
   opacity: 0.55;
 }
 
+/* Done indicator: a quiet check, muted so it reads as a status glance rather
+   than competing with the hut-count badge next to it. */
+.image-item-done {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--accent);
+  opacity: 0.75;
+}
+
 .sb-empty {
   padding: 22px 16px;
   text-align: center;

@@ -181,6 +181,25 @@ function VisitIcon({ className }: { className?: string }) {
   );
 }
 
+// Sidebar done indicator: a plain check, shown next to the hut-count badge
+// once an admin has marked the ortho done (see doneStatusLabel below).
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} aria-hidden>
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+// The sidebar's four display states, derived from done_at + hut_count rather
+// than stored — there's no separate "in progress" column (see
+// scripts/migrations/001-orthos-done-at.sql). Marking an ortho with zero huts
+// done means surveyed-and-empty, not "not yet done".
+function doneStatusLabel(doneAt: string | null | undefined, hutCount: number): string {
+  if (doneAt == null) return hutCount > 0 ? "In progress" : "Unlabeled";
+  return hutCount > 0 ? "Done" : "Done — no huts found";
+}
+
 export default function App() {
   const account = useAccount();
   // Constructed once on mount; `account` is stable by then (App only renders
@@ -205,6 +224,8 @@ export default function App() {
   const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   // Disables the Export button for the duration of the /api/export download.
   const [exporting, setExporting] = useState(false);
+  // Disables the Mark done/Reopen button for the duration of that PATCH.
+  const [markingDone, setMarkingDone] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
 
   // OrthoMap's magnifier portals its panel + zoom-level slider into this DOM
@@ -623,6 +644,30 @@ export default function App() {
     }
   }, [account]);
 
+  // Toggle the active ortho's done_at, admin-only (the button only renders
+  // for account.isAdmin — see the titlebar below). Updates `orthos` (the
+  // sidebar's source) and `activeOrtho` together from the one server
+  // response, so both reflect the change immediately without a refetch.
+  const handleToggleDone = useCallback(async () => {
+    if (!activeOrtho) return;
+    const nextDone = activeOrtho.done_at == null;
+    setMarkingDone(true);
+    try {
+      const { done_at } = await backendRef.current.setOrthoDone(
+        activeOrtho.id,
+        nextDone,
+      );
+      setOrthos((cur) =>
+        cur.map((o) => (o.id === activeOrtho.id ? { ...o, done_at } : o)),
+      );
+      setActiveOrtho((cur) => (cur ? { ...cur, done_at } : cur));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMarkingDone(false);
+    }
+  }, [activeOrtho]);
+
   // Global shortcuts: mode switches, per-hut attribute keys, ortho nav, reset
   // view, and the help modal. Space (hold-to-pan), Z (magnifier toggle) and
   // [ / ] (magnifier zoom) are bound inside OrthoMap instead — coordinate,
@@ -793,6 +838,23 @@ export default function App() {
                     >
                       <span>Admin</span>
                     </button>
+                    {activeOrtho && (
+                      <button
+                        type="button"
+                        className="key-btn"
+                        onClick={handleToggleDone}
+                        disabled={markingDone}
+                        title={
+                          activeOrtho.done_at == null
+                            ? "Mark this ortho done"
+                            : "Reopen this ortho"
+                        }
+                      >
+                        <span>
+                          {activeOrtho.done_at == null ? "Mark done" : "Reopen"}
+                        </span>
+                      </button>
+                    )}
                   </>
                 )}
                 <button
@@ -841,6 +903,8 @@ export default function App() {
                       const isActive = activeOrtho?.id === o.id;
                       const hutCount = hutCounts.get(o.id) ?? 0;
                       const hutLabel = `${hutCount} hut${hutCount === 1 ? "" : "s"}`;
+                      const statusLabel = doneStatusLabel(o.done_at, hutCount);
+                      const isDone = o.done_at != null;
                       return (
                         <button
                           type="button"
@@ -848,15 +912,18 @@ export default function App() {
                           className={"image-item" + (isActive ? " active" : "")}
                           onClick={() => setActiveOrtho(o)}
                           aria-current={isActive ? "true" : undefined}
-                          title={`${o.site} · Visit ${o.visit} — ${hutLabel}`}
+                          title={`${o.site} · Visit ${o.visit} — ${hutLabel} · ${statusLabel}`}
                         >
                           <VisitIcon className="img-icon" />
                           <span className="image-item-name">Visit {o.visit}</span>
+                          {isDone && (
+                            <CheckIcon className="image-item-done" />
+                          )}
                           <span
                             className={
                               "image-item-count mono" + (hutCount === 0 ? " zero" : "")
                             }
-                            aria-label={hutLabel}
+                            aria-label={`${hutLabel} · ${statusLabel}`}
                           >
                             {hutCount}
                           </span>

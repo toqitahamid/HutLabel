@@ -15,6 +15,7 @@ import { isCloudConfigured } from "./config";
 //     when Clerk is not configured so `npm run dev` runs end-to-end offline.
 export interface HutBackend {
   listOrthos(): Promise<Ortho[]>;
+  setOrthoDone(id: string, done: boolean): Promise<{ done_at: string | null }>;
   listHuts(orthoId: string): Promise<Hut[]>;
   createHut(
     orthoId: string,
@@ -62,6 +63,13 @@ export class ApiHutBackend implements HutBackend {
 
   listOrthos(): Promise<Ortho[]> {
     return this.call<Ortho[]>("/api/orthos");
+  }
+
+  setOrthoDone(id: string, done: boolean): Promise<{ done_at: string | null }> {
+    return this.call<{ id: string; done_at: string | null }>("/api/orthos", {
+      method: "PATCH",
+      body: JSON.stringify({ id, done }),
+    });
   }
 
   listHuts(orthoId: string): Promise<Hut[]> {
@@ -117,6 +125,14 @@ export class LocalDevHutBackend implements HutBackend {
       );
     }
     return (await res.json()) as Ortho[];
+  }
+
+  // No admin account exists in local dev (no Clerk), so the "Mark done" button
+  // never renders and this is never called for real — a local-only echo is
+  // enough to keep the interface total. App applies the returned done_at to
+  // its own state, same as the API backend, so no server round-trip is needed.
+  async setOrthoDone(_id: string, done: boolean): Promise<{ done_at: string | null }> {
+    return { done_at: done ? new Date().toISOString() : null };
   }
 
   async listHuts(orthoId: string): Promise<Hut[]> {

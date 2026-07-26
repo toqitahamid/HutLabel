@@ -9,6 +9,7 @@ export type Ortho = {
   height: number; // native pixels
   max_level: number; // pyramid native level == Leaflet reference zoom
   hut_count?: number; // server-side count at load time; absent in local dev
+  done_at?: string | null; // admin-set "surveyed" timestamp; null/absent = not done
 };
 
 // The tile URL template for an ortho, kept in lockstep with tiler.py's output
