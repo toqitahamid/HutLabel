@@ -4,16 +4,10 @@
 
 export type Role = "user" | "admin";
 
-// "invited" rows are pending Clerk invitations, not yet real users — the
-// AdminPanel renders them distinctly and offers "Revoke" instead of a role
-// change or removal.
-export type UserStatus = "active" | "invited";
-
 export type AdminUser = {
   id: string;
   email: string;
   role: Role | null;
-  status: UserStatus;
   last_seen_at: string | null;
 };
 
@@ -84,8 +78,4 @@ export async function setRole(
 
 export async function removeUser(getToken: GetToken, id: string): Promise<void> {
   await invokeAdmin(getToken, "remove", { id });
-}
-
-export async function revokeInvite(getToken: GetToken, id: string): Promise<void> {
-  await invokeAdmin(getToken, "revokeInvite", { id });
 }

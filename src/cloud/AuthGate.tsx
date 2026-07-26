@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useRef, useState, createContext } from "react";
-import { useAuth, useClerk, useSignIn, useSignUp, useUser } from "@clerk/react";
+import { useAuth, useClerk, useSignIn, useUser } from "@clerk/react";
 import { isCloudConfigured } from "./config";
 
 // Signed-in account, surfaced to the app header (email + sign out) and to the
@@ -31,20 +31,9 @@ function WebAuthGate({ children }: { children: React.ReactNode }) {
   const { isLoaded, isSignedIn, getToken } = useAuth();
   const { user } = useUser();
   const { signOut } = useClerk();
-  // Captured once on first render — read before anything below has a chance
-  // to strip it off the URL.
-  const [inviteTicket, setInviteTicket] = useState(
-    () => new URLSearchParams(window.location.search).get("__clerk_ticket"),
-  );
 
   if (!isLoaded) return <CenteredMessage>Loading…</CenteredMessage>;
-  if (!isSignedIn) {
-    return inviteTicket ? (
-      <AcceptInvite ticket={inviteTicket} onGiveUp={() => setInviteTicket(null)} />
-    ) : (
-      <LoginScreen />
-    );
-  }
+  if (!isSignedIn) return <LoginScreen />;
 
   return (
     <AccountContext.Provider
@@ -58,77 +47,6 @@ function WebAuthGate({ children }: { children: React.ReactNode }) {
       {children}
     </AccountContext.Provider>
   );
-}
-
-// Lands here when an invitation email's link redirects back with a
-// `__clerk_ticket` query param. Ticket sign-up mirrors the email-code flow
-// above: hand the ticket to Clerk, then finalize to activate the session
-// (which flips `isSignedIn` and lets WebAuthGate render `children` normally).
-// The ticket is single-use, so its query params are stripped from the URL as
-// soon as we know the outcome — a page refresh must not retry it.
-function AcceptInvite({
-  ticket,
-  onGiveUp,
-}: {
-  ticket: string;
-  onGiveUp: () => void;
-}) {
-  const { signUp } = useSignUp();
-  const [error, setError] = useState<string | null>(null);
-  const attempted = useRef(false);
-
-  useEffect(() => {
-    if (!signUp || attempted.current) return;
-    attempted.current = true;
-    (async () => {
-      try {
-        const { error: ticketError } = await signUp.ticket({ ticket });
-        if (ticketError) {
-          setError(friendlyAuthError(ticketError));
-          return;
-        }
-        if (signUp.status === "complete") {
-          const { error: finalizeError } = await signUp.finalize();
-          if (finalizeError) setError(friendlyAuthError(finalizeError));
-        } else {
-          setError(
-            "That invitation is no longer valid. Ask the admin to send a new one.",
-          );
-        }
-      } catch (err) {
-        setError(friendlyAuthError(err));
-      } finally {
-        stripInviteParams();
-      }
-    })();
-  }, [signUp, ticket]);
-
-  if (error) {
-    return (
-      <div className="auth-screen">
-        <div className="auth-card">
-          <h1 className="auth-title">HutLabel</h1>
-          <div className="auth-error" role="alert">
-            {error}
-          </div>
-          <button type="button" className="btn primary auth-submit" onClick={onGiveUp}>
-            Back to sign in
-          </button>
-        </div>
-      </div>
-    );
-  }
-  return <CenteredMessage>Accepting your invitation…</CenteredMessage>;
-}
-
-// Drops `__clerk_ticket`/`__clerk_status` from the URL without a navigation,
-// so a refresh after acceptance (or after a failed, consumed ticket) doesn't
-// resubmit it.
-function stripInviteParams() {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("__clerk_ticket");
-  url.searchParams.delete("__clerk_status");
-  window.history.replaceState({}, "", url.toString());
 }
 
 const OTP_LEN = 6;
@@ -399,9 +317,6 @@ function friendlyAuthError(err: unknown): string {
   }
   if (code === "too_many_requests") {
     return "Too many requests. Wait a minute, then try again.";
-  }
-  if (code.includes("ticket") || code.includes("invitation")) {
-    return "That invitation is no longer valid. Ask the admin to send a new one.";
   }
   return first?.message ?? (err instanceof Error ? err.message : String(err));
 }

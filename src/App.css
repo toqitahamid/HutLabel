@@ -969,14 +969,6 @@
   color: var(--text-secondary);
   font-size: 12px;
 }
-.admin-badge {
-  flex: 0 0 auto;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  color: var(--accent);
-  font-size: 11px;
-}
 .admin-ulast {
   flex: 0 0 auto;
   font-size: 12px;

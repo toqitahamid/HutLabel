@@ -6,23 +6,16 @@ import { clerk, requireAdmin, requireUser } from "./_lib.js";
 // never sees CLERK_SECRET_KEY. Roles live in Clerk `public_metadata.role`.
 //
 //   { action: "list" }
-//   { action: "add",         email, role }
-//   { action: "setRole",     id, role }
-//   { action: "remove",      id }
-//   { action: "revokeInvite", id }
+//   { action: "add",     email, role }
+//   { action: "setRole", id, role }
+//   { action: "remove",  id }
 //
-// "add" sends a Clerk invitation rather than creating the user outright, so
-// the invitee gets an email with a sign-up link. The role travels in the
-// invitation's publicMetadata, which Clerk copies onto the user's own
-// publicMetadata once they accept and sign up — no webhook needed.
+// "add" creates the Clerk user outright with the chosen role in
+// publicMetadata; the admin is responsible for telling the person to sign in
+// with their email to receive a login code.
 
 type Role = "user" | "admin";
 const ROLES: readonly string[] = ["user", "admin"];
-
-// Where an invitation link should land. Prefer the origin the request came
-// from (works for local dev and every preview/prod deployment); this is only
-// a fallback for direct API calls that omit an Origin header.
-const FALLBACK_ORIGIN = "https://hutlabel.vercel.app";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -45,12 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     switch (body.action) {
       case "list": {
-        const [{ data: clerkUsers }, { data: invitations }] =
-          await Promise.all([
-            client.users.getUserList({ limit: 200 }),
-            client.invitations.getInvitationList({ status: "pending", limit: 200 }),
-          ]);
-        const users = clerkUsers.map((u) => ({
+        const { data } = await client.users.getUserList({ limit: 200 });
+        const users = data.map((u) => ({
           id: u.id,
           email:
             u.emailAddresses.find((e) => e.id === u.primaryEmailAddressId)
@@ -58,25 +47,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             u.emailAddresses[0]?.emailAddress ??
             "",
           role: (u.publicMetadata.role as Role | undefined) ?? "user",
-          status: "active" as const,
           last_seen_at: u.lastActiveAt
             ? new Date(u.lastActiveAt).toISOString()
             : u.lastSignInAt
               ? new Date(u.lastSignInAt).toISOString()
               : null,
         }));
-        // Pending invites have no user id yet, so the invitation id doubles
-        // as the row id — that's what a later `revokeInvite` call targets.
-        const invited = invitations.map((inv) => ({
-          id: inv.id,
-          email: inv.emailAddress,
-          role: (inv.publicMetadata?.role as Role | undefined) ?? "user",
-          status: "invited" as const,
-          last_seen_at: null,
-        }));
-        const rows = [...users, ...invited];
-        rows.sort((a, b) => a.email.localeCompare(b.email));
-        res.status(200).json({ users: rows });
+        users.sort((a, b) => a.email.localeCompare(b.email));
+        res.status(200).json({ users });
         return;
       }
       case "add": {
@@ -85,24 +63,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           res.status(400).json({ error: "email and role are required" });
           return;
         }
-        const origin =
-          typeof req.headers.origin === "string"
-            ? req.headers.origin
-            : FALLBACK_ORIGIN;
-        await client.invitations.createInvitation({
-          emailAddress: email,
+        await client.users.createUser({
+          emailAddress: [email],
           publicMetadata: { role: body.role as Role },
-          redirectUrl: origin,
         });
-        res.status(200).json({ ok: true });
-        return;
-      }
-      case "revokeInvite": {
-        if (!body.id) {
-          res.status(400).json({ error: "id is required" });
-          return;
-        }
-        await client.invitations.revokeInvitation(body.id);
         res.status(200).json({ ok: true });
         return;
       }
@@ -141,8 +105,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     // Clerk API errors carry { status, errors: [{ message, longMessage }] }.
     // `status` is Clerk's own HTTP status for the failure (422 for things
-    // like "already invited" or "already a member") — surface those as 400s
-    // with Clerk's message instead of a blanket 500.
+    // like "already a member") — surface those as 400s with Clerk's message
+    // instead of a blanket 500.
     const clerkErr = err as {
       status?: number;
       errors?: Array<{ longMessage?: string; message?: string }>;
