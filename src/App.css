@@ -643,6 +643,57 @@
   margin: 0;
 }
 
+/* Hut list: the rail's last section, listing every hut on the active ortho
+   for click-to-jump navigation. Gets whatever vertical space the fixed
+   sections above it (zoom panel, attribute fields, delete button) don't need,
+   and scrolls WITHIN that space — flex: 1 1 auto + min-height: 0 is what lets
+   it shrink below its own content size instead of pushing those sections off
+   the bottom. */
+.hut-list-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hut-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -16px; /* bleed rows to the rail's edges, like .tree .image-item */
+}
+
+/* One hut row: same active-row idiom as .tree .image-item (bg-elevated fill +
+   accent left border), so the two lists read as one system. */
+.hut-row {
+  display: block;
+  width: 100%;
+  padding: 6px 16px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 60ms ease, color 60ms ease;
+}
+
+.hut-row:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.hut-row.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-left-color: var(--accent);
+}
+
 /* ---------- Keyboard help modal ---------- */
 
 .help-backdrop {

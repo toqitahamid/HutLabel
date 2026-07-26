@@ -87,6 +87,10 @@ export type OrthoMapProps = {
   // initial value (however it's chosen) never triggers a reset by itself —
   // only a change after mount does (see the effect below).
   resetSignal?: number;
+  // Set by App when a hut-list row is clicked: fly/pan the map to that hut's
+  // box. `nonce` (not just `hutId`) so clicking the SAME already-selected row
+  // still re-fires the effect below — "where was it again?" always re-centers.
+  focusRequest?: { hutId: string; nonce: number } | null;
 };
 
 export function OrthoMap({
@@ -98,10 +102,18 @@ export function OrthoMap({
   onEditBox,
   magnifierSlotEl,
   resetSignal,
+  focusRequest,
 }: OrthoMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerLayerRef = useRef<L.LayerGroup | null>(null);
+  // Latest huts array for the focus-fly effect below, which deliberately
+  // depends only on [focusRequest] — reading huts fresh via a ref (rather
+  // than adding it to the deps) means clicking the SAME hut twice in a row
+  // (nonce bump, same hutId) still re-fires without the effect also re-firing
+  // on every unrelated huts update (attribute edits, other creates).
+  const hutsRef = useRef(huts);
+  hutsRef.current = huts;
   // Latest callback without re-binding the map handlers (which would
   // otherwise force a map teardown just because a parent re-rendered).
   const onPlaceRef = useRef(onPlace);
@@ -389,6 +401,35 @@ export function OrthoMap({
     );
     map.fitBounds(bounds);
   }, [resetSignal]);
+
+  // Fly/pan to a hut-list row's hut (App's focusRequest signal). Depends only
+  // on focusRequest — huts is read via hutsRef so an unrelated huts update
+  // never re-triggers this, and re-clicking the same already-selected row
+  // (same hutId, bumped nonce) does. No first-mount guard needed: unlike
+  // resetSignal, focusRequest starts out null and only becomes non-null from
+  // an explicit row click.
+  useEffect(() => {
+    if (!focusRequest) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const hut = hutsRef.current.find((h) => h.id === focusRequest.hutId);
+    if (!hut) return;
+    const { max_level } = ortho;
+    // Same box-vs-point unproject math the marker-draw effect below uses: a
+    // box's bounds are its two corners; a point's "bounds" collapse to one
+    // LatLng, which flyToBounds centers on directly.
+    const bounds =
+      hut.w != null && hut.h != null
+        ? L.latLngBounds(
+            map.unproject([hut.x, hut.y], max_level),
+            map.unproject([hut.x + hut.w, hut.y + hut.h], max_level),
+          )
+        : L.latLngBounds(
+            map.unproject([hut.x, hut.y], max_level),
+            map.unproject([hut.x, hut.y], max_level),
+          );
+    map.flyToBounds(bounds, { maxZoom: max_level + 1, padding: [80, 80], duration: 0.4 });
+  }, [focusRequest, ortho]);
 
   // The magnifier's own Leaflet instance: same tile pyramid, independent map
   // object, mounted into magnifierSlotEl (portaled from the right rail) once

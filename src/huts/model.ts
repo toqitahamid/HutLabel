@@ -17,6 +17,15 @@ export const CONFIDENCES = ["certain", "maybe"] as const;
 export type StructureType = (typeof STRUCTURE_TYPES)[number];
 export type Confidence = (typeof CONFIDENCES)[number];
 
+// Human labels for STRUCTURE_TYPES, shared by every UI surface that displays
+// one (AttributePanel's dropdown, HutList's rows) so they never drift apart.
+// Confidence has no such map — "certain"/"maybe" are shown as-is everywhere.
+export const STRUCTURE_LABELS: Record<StructureType, string> = {
+  dwelling_hut: "Dwelling hut",
+  feeding_platform: "Feeding platform",
+  uncertain_mound: "Uncertain mound",
+};
+
 // The attributes a labeler sets on a hut. Extent/size comes from the SAM mask
 // derived offline from the box, not a manual field — a wildlife-literature
 // review found other candidate attributes aren't reliably judgeable from a

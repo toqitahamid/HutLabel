@@ -1,17 +1,12 @@
 import {
   CONFIDENCES,
+  STRUCTURE_LABELS,
   STRUCTURE_TYPES,
   hutCenter,
   type Hut,
   type HutAttributes,
-  type StructureType,
 } from "./model";
-
-const STRUCTURE_LABELS: Record<StructureType, string> = {
-  dwelling_hut: "Dwelling hut",
-  feeding_platform: "Feeding platform",
-  uncertain_mound: "Uncertain mound",
-};
+import { HutList } from "./HutList";
 
 // Side panel for the selected hut. Every change is committed immediately
 // (per-edit CRUD) via `onChange`; there is no save button — the frozen schema's
@@ -20,14 +15,20 @@ const STRUCTURE_LABELS: Record<StructureType, string> = {
 export function AttributePanel({
   hut,
   huts,
+  selectedHutId,
   onChange,
   onDelete,
+  onFocusHut,
   zoomSlot,
 }: {
   hut: Hut | null;
   huts: Hut[];
+  selectedHutId: string | null;
   onChange: (attrs: HutAttributes) => void;
   onDelete: () => void;
+  // Row click in the hut list below: selects that hut AND re-centers the map
+  // on it (App's focusRequest signal, consumed by OrthoMap's fly-to effect).
+  onFocusHut: (id: string) => void;
   // The magnifier (OrthoMap's second Leaflet map) portals its panel + zoom
   // controls in here, at the top of the rail — the same position FlagLabel's
   // canvas-based zoom panel occupies, independent of hut selection.
@@ -44,6 +45,7 @@ export function AttributePanel({
             to edit or delete it.
           </p>
         </div>
+        <HutList huts={huts} selectedHutId={selectedHutId} onSelectHut={onFocusHut} />
       </aside>
     );
   }
@@ -90,6 +92,8 @@ export function AttributePanel({
           Delete hut
         </button>
       </div>
+
+      <HutList huts={huts} selectedHutId={selectedHutId} onSelectHut={onFocusHut} />
     </aside>
   );
 }

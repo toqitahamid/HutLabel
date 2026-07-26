@@ -227,6 +227,12 @@ export default function App() {
   // Disables the Mark done/Reopen button for the duration of that PATCH.
   const [markingDone, setMarkingDone] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
+  // Hut-list row-click signal for OrthoMap's fly-to effect. `nonce` (not just
+  // hutId) so clicking the ALREADY-selected row still re-fires it — see
+  // handleFocusHut below and OrthoMap's focusRequest prop.
+  const [focusRequest, setFocusRequest] = useState<{ hutId: string; nonce: number } | null>(
+    null,
+  );
 
   // OrthoMap's magnifier portals its panel + zoom-level slider into this DOM
   // node, rendered by AttributePanel at the top of the right rail — the same
@@ -271,6 +277,15 @@ export default function App() {
     () => huts.find((h) => h.id === selectedHutId) ?? null,
     [huts, selectedHutId],
   );
+
+  // Hut-list row click: select the hut (same as clicking its map marker) AND
+  // bump the focus nonce so OrthoMap flies/pans to it — every click bumps,
+  // even a re-click on the row that's already selected, so "where was it
+  // again?" always re-centers instead of being a no-op the second time.
+  const handleFocusHut = useCallback((id: string) => {
+    setSelectedHutId(id);
+    setFocusRequest((prev) => ({ hutId: id, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
 
   // Orthos grouped by site, each site's visits sorted, for the explorer tree.
   // Sites are sorted alphabetically so the tree is stable across reloads.
@@ -961,6 +976,7 @@ export default function App() {
             onEditBox={handleEditBox}
             magnifierSlotEl={zoomSlotEl}
             resetSignal={resetNonce}
+            focusRequest={focusRequest}
           />
         ) : (
           <div className="stage-empty">
@@ -972,8 +988,10 @@ export default function App() {
       <AttributePanel
         hut={selectedHut}
         huts={huts}
+        selectedHutId={selectedHutId}
         onChange={handleChangeAttrs}
         onDelete={handleDelete}
+        onFocusHut={handleFocusHut}
         zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
       />
 
