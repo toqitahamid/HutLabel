@@ -10,8 +10,7 @@
     "build": "tsc && tsc -p api && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "tiles:demo": "python3 scripts/decode_demo_tiles.py"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@clerk/backend": "^3.13.0",

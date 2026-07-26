@@ -113,7 +113,7 @@ export class LocalDevHutBackend implements HutBackend {
     const res = await fetch("/tiles/orthos.dev.json");
     if (!res.ok) {
       throw new Error(
-        "No dev tileset. Run `npm run tiles:demo`, or configure Clerk + the API.",
+        "No dev tileset. Configure Clerk + the API, or point VITE_TILE_BASE at a local data/tiles run.",
       );
     }
     return (await res.json()) as Ortho[];

@@ -7,7 +7,7 @@ dist
 .DS_Store
 # Serena LSP tool state
 .serena
-# Local dev tileset decoded from demo_pyramid.json (regenerate with npm run tiles:demo)
+# Local dev tileset directory (unused now that tiles stream from data/tiles/ or R2)
 public/tiles
 # Source orthomosaics — 15 GB of GeoTIFFs, never committed
 data
@@ -15,4 +15,4 @@ data
 # Vendored AI-agent skill docs (restore with `npx skills add clerk/skills`;
 # pinned by skills-lock.json, which IS committed)
 .agents
-.claude/skills
+.claude

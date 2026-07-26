@@ -24,10 +24,7 @@ scripts/
   ortho-inventory.mjs   parses data/Orthomosaics/**/*.tif filenames into {id, site, visit, path}
   tile-all.mjs          batch-runs tiler.py over all 41 orthos -> data/tiles/ + manifest.json
   seed-orthos.mjs        upserts a tiles manifest into the Neon orthos table
-  decode_demo_tiles.py  unpacks demo_pyramid.json -> public/tiles for offline dev
-  demo_pyramid.json     pre-tiled Example Site crop (dev-only; delete once R2 tiles exist)
 data/            the 41 source orthomosaics + generated tiles (git-ignored; not committed)
-public/tiles/    decoded dev tileset (git-ignored; regenerate with npm run tiles:demo)
 ```
 
 ## Dev
@@ -39,15 +36,14 @@ vercel dev --listen 3999  # in a second terminal, serves the Vercel functions
 npm test                 # vitest (pure model + geometry)
 ```
 
-Without Clerk env vars the app runs in local-dev mode: orthos come from the
-decoded demo manifest and huts live in memory. Set `VITE_CLERK_PUBLISHABLE_KEY`
+Without Clerk env vars the app runs in local-dev mode: huts live in memory and
+the ortho list comes from a local manifest. Set `VITE_CLERK_PUBLISHABLE_KEY`
 (client) and `CLERK_SECRET_KEY` / `DATABASE_URL` (server, Vercel env) to use the
 real backend — see `.env.example`.
 
-Tiles are served one of three ways depending on `VITE_TILE_BASE` /
+Tiles are served one of two ways depending on `VITE_TILE_BASE` /
 `VITE_TILE_EXT`:
-- `/tiles` + `jpg` — the decoded demo tileset (`npm run tiles:demo`), one ortho, fully offline.
-- `/tiles-real` + `webp` — all 41 real orthos, streamed from `data/tiles/` by the
+- `/tiles-real` + `webp` — local dev, all 41 real orthos, streamed from `data/tiles/` by the
   `serveRealTiles` middleware in `vite.config.ts`. That middleware exists because
   `data/tiles/` holds ~190k tile files; symlinking it under `public/` would make
   both vite's and `vercel dev`'s chokidar watchers recurse into it and exhaust
@@ -77,3 +73,7 @@ served as static files (egress-free) that the viewer streams on-screen-only.
 
 Production env vars: `VITE_TILE_BASE=https://<r2-public-url>`,
 `VITE_TILE_EXT=webp`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

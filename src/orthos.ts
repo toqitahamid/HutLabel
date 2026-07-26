@@ -12,8 +12,8 @@ export type Ortho = {
 
 // The tile URL template for an ortho, kept in lockstep with tiler.py's output
 // layout: {base}/{ortho_id}/{z}/{x}_{y}.{ext}. `base` is VITE_TILE_BASE (R2 in
-// prod, "/tiles" in dev); `ext` is VITE_TILE_EXT (png from tiler.py, jpg for the
-// decoded demo tileset). Leaflet fills {z}/{x}/{y} itself.
+// prod, "/tiles-real" in dev); `ext` is VITE_TILE_EXT (webp from tiler.py).
+// Leaflet fills {z}/{x}/{y} itself.
 export function tileUrlTemplate(
   base: string,
   orthoId: string,
