@@ -15,7 +15,8 @@ import type { Hut, StructureType } from "../huts/model";
 //   resolves against that reference, tile {col}_{row} and marker positions share
 //   one pixel space and stay aligned at any zoom (including over-zoom).
 //
-// max_level is PER ORTHO (Example Site 15, the square demo crop 12), so it drives
+// max_level is PER ORTHO (15 for a 31964px-tall one, 12 for a 4096px square),
+// so it drives
 // maxNativeZoom on the TileLayer, read from the row — not a constant.
 
 const OVERZOOM = 2; // allow zooming past native so ~66px huts are easy to click
