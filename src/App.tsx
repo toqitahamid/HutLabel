@@ -203,6 +203,8 @@ export default function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   // Web-only admin user-management panel (gated on account.isAdmin in the titlebar).
   const [adminPanelOpen, setAdminPanelOpen] = useState(false);
+  // Disables the Export button for the duration of the /api/export download.
+  const [exporting, setExporting] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
 
   // OrthoMap's magnifier portals its panel + zoom-level slider into this DOM
@@ -580,6 +582,47 @@ export default function App() {
     }
   }, [history, huts]);
 
+  // Downloads every label in the database as one JSON file, admin-only (the
+  // Export button only renders for account.isAdmin — see the titlebar below).
+  // Same bearer-token pattern as ApiHutBackend.call, but the response is a
+  // file to save, not JSON to parse, so it can't reuse that helper directly.
+  const handleExport = useCallback(async () => {
+    if (!account) return;
+    setExporting(true);
+    try {
+      const token = await account.getToken();
+      if (!token) throw new Error("Not signed in.");
+      const res = await fetch("/api/export", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        let detail = `${res.status}`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) detail = body.error;
+        } catch {
+          // non-JSON error body; keep the status code
+        }
+        throw new Error(detail);
+      }
+      const disposition = res.headers.get("Content-Disposition");
+      const filename =
+        disposition?.match(/filename="([^"]+)"/)?.[1] ??
+        `hutlabel-export-${new Date().toISOString().slice(0, 10)}.json`;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }, [account]);
+
   // Global shortcuts: mode switches, per-hut attribute keys, ortho nav, reset
   // view, and the help modal. Space (hold-to-pan), Z (magnifier toggle) and
   // [ / ] (magnifier zoom) are bound inside OrthoMap instead — coordinate,
@@ -732,14 +775,25 @@ export default function App() {
                   {account.email}
                 </span>
                 {account.isAdmin && (
-                  <button
-                    type="button"
-                    className="key-btn"
-                    onClick={() => setAdminPanelOpen(true)}
-                    title="Manage users"
-                  >
-                    <span>Admin</span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="key-btn"
+                      onClick={handleExport}
+                      disabled={exporting}
+                      title="Export all labels as JSON"
+                    >
+                      <span>{exporting ? "Exporting…" : "Export"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="key-btn"
+                      onClick={() => setAdminPanelOpen(true)}
+                      title="Manage users"
+                    >
+                      <span>Admin</span>
+                    </button>
+                  </>
                 )}
                 <button
                   type="button"

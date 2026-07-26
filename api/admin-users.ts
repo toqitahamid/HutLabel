@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClerkClient } from "@clerk/backend";
-import { requireUser } from "./_lib.js";
+import { clerk, requireAdmin, requireUser } from "./_lib.js";
 
 // Admin user management (FlagLabel's `admin-users` Edge Function, ported to a
 // Vercel function + Clerk Backend API). Action-based POST endpoint; the browser
@@ -25,10 +24,6 @@ const ROLES: readonly string[] = ["user", "admin"];
 // a fallback for direct API calls that omit an Origin header.
 const FALLBACK_ORIGIN = "https://hutlabel.vercel.app";
 
-function clerk() {
-  return createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -36,13 +31,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const userId = await requireUser(req, res);
   if (!userId) return;
+  if (!(await requireAdmin(userId, res))) return;
 
   const client = clerk();
-  const me = await client.users.getUser(userId);
-  if (me.publicMetadata.role !== "admin") {
-    res.status(403).json({ error: "Admin access required" });
-    return;
-  }
 
   const body = req.body as {
     action?: string;
