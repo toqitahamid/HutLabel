@@ -780,7 +780,6 @@ export default function App() {
                   <ChevronIcon className="chev" />
                   <SiteIcon className="folder-icon" />
                   <span className="folder-name">{site}</span>
-                  <span className="folder-badge mono">{siteOrthos.length}</span>
                 </button>
                 {!collapsed && (
                   <div className="folder-children">

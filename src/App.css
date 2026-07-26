@@ -234,17 +234,6 @@
   font-size: 12px;
 }
 
-.folder-badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-secondary);
-}
-
-.folder-badge.mono {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
 /* Visit rows inside the tree: indented under the site, with a leading pin icon. */
 .tree .image-item {
   display: flex;
