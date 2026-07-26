@@ -266,6 +266,17 @@ export default function App() {
       .map((site) => ({ site, orthos: bySite.get(site)! }));
   }, [orthos]);
 
+  // Per-ortho hut counts for the sidebar rows. Seeded from the server-reported
+  // hut_count on each ortho, then the active ortho's entry is overridden with
+  // the live `huts` array length so a just-drawn or undone box shows up
+  // immediately instead of waiting on a re-fetch.
+  const hutCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const o of orthos) counts.set(o.id, o.hut_count ?? 0);
+    if (activeOrtho) counts.set(activeOrtho.id, huts.length);
+    return counts;
+  }, [orthos, activeOrtho, huts.length]);
+
   const toggleSite = useCallback((site: string) => {
     setCollapsedSites((prev) => {
       const next = new Set(prev);
@@ -775,6 +786,8 @@ export default function App() {
                   <div className="folder-children">
                     {siteOrthos.map((o) => {
                       const isActive = activeOrtho?.id === o.id;
+                      const hutCount = hutCounts.get(o.id) ?? 0;
+                      const hutLabel = `${hutCount} hut${hutCount === 1 ? "" : "s"}`;
                       return (
                         <button
                           type="button"
@@ -782,10 +795,18 @@ export default function App() {
                           className={"image-item" + (isActive ? " active" : "")}
                           onClick={() => setActiveOrtho(o)}
                           aria-current={isActive ? "true" : undefined}
-                          title={`${o.site} · Visit ${o.visit}`}
+                          title={`${o.site} · Visit ${o.visit} — ${hutLabel}`}
                         >
                           <VisitIcon className="img-icon" />
                           <span className="image-item-name">Visit {o.visit}</span>
+                          <span
+                            className={
+                              "image-item-count mono" + (hutCount === 0 ? " zero" : "")
+                            }
+                            aria-label={hutLabel}
+                          >
+                            {hutCount}
+                          </span>
                         </button>
                       );
                     })}

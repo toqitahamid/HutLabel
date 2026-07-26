@@ -290,6 +290,31 @@
   text-overflow: ellipsis;
 }
 
+/* Per-visit hut count: a quiet secondary badge, not a label — shrinks last
+   (flex-shrink: 0) so the name ellipsizes before this does, and fades further
+   at zero since an unstarted ortho shouldn't compete with labeled ones. */
+.image-item-count {
+  flex-shrink: 0;
+  min-width: 1.6em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.image-item-count.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.image-item-count.zero {
+  border-color: transparent;
+  opacity: 0.55;
+}
+
 .sb-empty {
   padding: 22px 16px;
   text-align: center;
