@@ -36,6 +36,13 @@ vercel dev --listen 3999  # in a second terminal, serves the Vercel functions
 npm test                 # vitest (pure model + geometry)
 ```
 
+## Deploy
+
+The Vercel project is connected to this repo, so pushing to `main` builds and
+promotes to production automatically — no `vercel deploy` needed. Any other
+branch gets a preview deployment instead. Env vars live in the Vercel project
+settings, not in the repo.
+
 Without Clerk env vars the app runs in local-dev mode: huts live in memory and
 the ortho list comes from a local manifest. Set `VITE_CLERK_PUBLISHABLE_KEY`
 (client) and `CLERK_SECRET_KEY` / `DATABASE_URL` (server, Vercel env) to use the
