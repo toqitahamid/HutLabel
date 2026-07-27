@@ -838,6 +838,80 @@
   }
 }
 
+/* Footer link inside the help modal, re-opening the welcome card — kept
+   subtle (tertiary text, no border) since it's a secondary way in, not a
+   primary action. */
+.help-footer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  text-align: center;
+}
+
+.help-footer-link {
+  font: inherit;
+  font-size: 11.5px;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 4px;
+  transition: color 60ms ease;
+}
+
+.help-footer-link:hover {
+  color: var(--accent);
+}
+
+/* ---------- Welcome card ---------- */
+/* Same backdrop/modal vocabulary as the help modal above, just narrower —
+   this is a short intro, not a two-column reference grid. */
+
+.welcome-modal {
+  width: min(440px, calc(100vw - 48px));
+}
+
+.welcome-steps {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.welcome-steps li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.welcome-tips {
+  margin: 0 0 18px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.welcome-steps kbd,
+.welcome-tips kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.welcome-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ── Modal vocabulary (shared with FlagLabel: upload-overlay/upload-modal) ── */
 .upload-overlay {
   position: fixed;

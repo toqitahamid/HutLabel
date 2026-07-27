@@ -257,7 +257,8 @@ body {
 .segmented-btn:focus-visible,
 .banner-x:focus-visible,
 .folder-row:focus-visible,
-.image-item:focus-visible {
+.image-item:focus-visible,
+.help-footer-link:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }

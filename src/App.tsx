@@ -38,6 +38,29 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+// First-visit welcome card, gated on this localStorage flag so it shows once
+// per browser rather than nagging on every load. Reads/writes are guarded —
+// private-mode Safari throws on any localStorage access — and a failure is
+// treated as "already welcomed" so a blocked browser never gets stuck
+// re-showing the card.
+const WELCOME_STORAGE_KEY = "hutlabel:welcomed";
+
+function readWelcomed(): boolean {
+  try {
+    return localStorage.getItem(WELCOME_STORAGE_KEY) != null;
+  } catch {
+    return true;
+  }
+}
+
+function markWelcomed(): void {
+  try {
+    localStorage.setItem(WELCOME_STORAGE_KEY, "1");
+  } catch {
+    // Private-mode Safari etc. — nothing to persist, nothing to do.
+  }
+}
+
 // Sections for the keyboard-help modal (`?`), grouped the way FlagLabel's
 // KeyboardHelp groups its own — one row per action, keys rendered in a <kbd>.
 // Space, Z and [ / ] live in OrthoMap; listed here too since they're still
@@ -85,7 +108,13 @@ const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
 
 // Keyboard-shortcut reference, ported from FlagLabel's KeyboardHelp. Backdrop
 // click, the × button, and Esc (handled by App's keydown effect) all close it.
-function KeyboardHelp({ onClose }: { onClose: () => void }) {
+function KeyboardHelp({
+  onClose,
+  onShowWelcome,
+}: {
+  onClose: () => void;
+  onShowWelcome: () => void;
+}) {
   return (
     <div className="help-backdrop" onClick={onClose}>
       <div
@@ -127,6 +156,81 @@ function KeyboardHelp({ onClose }: { onClose: () => void }) {
               </dl>
             </div>
           ))}
+        </div>
+
+        <div className="help-footer">
+          <button type="button" className="help-footer-link" onClick={onShowWelcome}>
+            Show welcome guide
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One-time welcome card, shown on first visit (see WELCOME_STORAGE_KEY) and
+// re-openable from the help modal's "Show welcome guide" link. Same
+// backdrop/modal idiom as KeyboardHelp above — Esc and backdrop click both
+// dismiss, handled the same way (backdrop here, Esc in App's keydown effect).
+function WelcomeCard({
+  onDismiss,
+  onShowShortcuts,
+}: {
+  onDismiss: () => void;
+  onShowShortcuts: () => void;
+}) {
+  // Autofocused so Enter dismisses immediately — the card is meant to get
+  // out of the way fast, not demand a decision.
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    primaryRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="help-backdrop" onClick={onDismiss}>
+      <div
+        className="help-modal welcome-modal"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label="Welcome to HutLabel"
+      >
+        <div className="help-header">
+          <div className="help-title">Welcome to HutLabel</div>
+          <button
+            className="help-close"
+            onClick={onDismiss}
+            aria-label="Close"
+            title="Esc"
+          >
+            ×
+          </button>
+        </div>
+
+        <p className="help-intro">
+          Label muskrat huts on drone orthomosaics by drawing boxes around them.
+        </p>
+
+        <ol className="welcome-steps">
+          <li>Pick a site and visit in the left sidebar.</li>
+          <li>Find a hut and drag to draw a box around it — it saves automatically.</li>
+          <li>
+            Press <kbd>Ctrl+Z</kbd> (<kbd>⌘Z</kbd> on Mac) to undo, or select a box and
+            press <kbd>Delete</kbd>.
+          </li>
+        </ol>
+
+        <p className="welcome-tips">
+          Tip: hold <kbd>Space</kbd> to pan, scroll to zoom, and <kbd>Z</kbd> toggles the
+          magnifier.
+        </p>
+
+        <div className="welcome-actions">
+          <button type="button" className="btn" onClick={onShowShortcuts}>
+            View shortcuts
+          </button>
+          <button type="button" className="btn primary" ref={primaryRef} onClick={onDismiss}>
+            Start labeling
+          </button>
         </div>
       </div>
     </div>
@@ -209,6 +313,9 @@ export default function App() {
   // (`0` shortcut) — a counter rather than a boolean so pressing it twice in a
   // row (already reset) still re-fits the view each time.
   const [helpOpen, setHelpOpen] = useState(false);
+  // First-visit welcome card (see WELCOME_STORAGE_KEY) — starts open only
+  // when the browser has no "already welcomed" flag yet.
+  const [welcomeOpen, setWelcomeOpen] = useState(() => !readWelcomed());
   // Web-only admin user-management panel (gated on account.isAdmin in the titlebar).
   const [adminPanelOpen, setAdminPanelOpen] = useState(false);
   // Disables the Export button for the duration of the /api/export download.
@@ -607,6 +714,27 @@ export default function App() {
     }
   }, [activeOrtho]);
 
+  // Dismissing the welcome card by any route (×, backdrop, Esc, or "Start
+  // labeling") marks it seen so it never shows again in this browser.
+  const dismissWelcome = useCallback(() => {
+    setWelcomeOpen(false);
+    markWelcomed();
+  }, []);
+
+  // "View shortcuts" on the welcome card: dismiss it and open the help modal
+  // in the same gesture.
+  const showShortcutsFromWelcome = useCallback(() => {
+    dismissWelcome();
+    setHelpOpen(true);
+  }, [dismissWelcome]);
+
+  // "Show welcome guide" link inside the help modal — the re-entry point
+  // once the card has already been dismissed once.
+  const reopenWelcome = useCallback(() => {
+    setHelpOpen(false);
+    setWelcomeOpen(true);
+  }, []);
+
   // Global shortcuts: mode switches, per-hut attribute keys, ortho nav, reset
   // view, and the help modal. Space (hold-to-pan), Z (magnifier toggle) and
   // [ / ] (magnifier zoom) are bound inside OrthoMap instead — coordinate,
@@ -615,6 +743,13 @@ export default function App() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (isEditableTarget(e.target)) return;
+      if (welcomeOpen) {
+        // The card owns the keyboard while it's open — same as the admin
+        // panel below — but Esc still dismisses it, matching the backdrop
+        // click and × button.
+        if (e.key === "Escape") dismissWelcome();
+        return;
+      }
       if (adminPanelOpen) return; // the panel owns the keyboard (incl. its own Esc)
 
       // Undo/redo: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, and Ctrl+Y (the common
@@ -674,6 +809,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     helpOpen,
+    welcomeOpen,
+    dismissWelcome,
     adminPanelOpen,
     selectedHutId,
     activeOrtho,
@@ -896,7 +1033,12 @@ export default function App() {
         zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
       />
 
-      {helpOpen && <KeyboardHelp onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <KeyboardHelp onClose={() => setHelpOpen(false)} onShowWelcome={reopenWelcome} />
+      )}
+      {welcomeOpen && (
+        <WelcomeCard onDismiss={dismissWelcome} onShowShortcuts={showShortcutsFromWelcome} />
+      )}
       {adminPanelOpen && account && (
         <AdminPanel account={account} onClose={() => setAdminPanelOpen(false)} />
       )}
