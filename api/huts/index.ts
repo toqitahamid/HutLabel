@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { isValidAttributes, type HutAttributes } from "../../src/huts/model.js";
 import { requireUser, sql } from "../_lib.js";
 
 // GET  /api/huts?ortho_id=... — all huts on one ortho (any signed-in labeler).
@@ -15,7 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
     const rows = await sql()`
-      select id, ortho_id, x, y, w, h, structure_type, confidence, labeler_id, created_at
+      select id, ortho_id, x, y, w, h, labeler_id, created_at
       from huts where ortho_id = ${orthoId}
       order by created_at asc
     `;
@@ -30,14 +29,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       y?: unknown;
       w?: unknown;
       h?: unknown;
-      structure_type?: unknown;
-      confidence?: unknown;
     };
     const { ortho_id, x, y, w, h } = body;
-    const attrs = {
-      structure_type: body.structure_type,
-      confidence: body.confidence,
-    } as HutAttributes;
 
     const isInt = (v: unknown): v is number => Number.isInteger(v);
     const validGeometry =
@@ -47,22 +40,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (y as number) >= 0 &&
       // point (w = h = null) or box (both positive ints)
       ((w == null && h == null) || (isInt(w) && isInt(h) && w > 0 && h > 0));
-    if (
-      typeof ortho_id !== "string" ||
-      !ortho_id ||
-      !validGeometry ||
-      !isValidAttributes(attrs)
-    ) {
+    if (typeof ortho_id !== "string" || !ortho_id || !validGeometry) {
       res.status(400).json({ error: "Invalid hut payload" });
       return;
     }
 
     try {
       const rows = await sql()`
-        insert into huts (ortho_id, x, y, w, h, structure_type, confidence, labeler_id)
-        values (${ortho_id}, ${x}, ${y}, ${w ?? null}, ${h ?? null},
-                ${attrs.structure_type}, ${attrs.confidence}, ${userId})
-        returning id, ortho_id, x, y, w, h, structure_type, confidence, labeler_id, created_at
+        insert into huts (ortho_id, x, y, w, h, labeler_id)
+        values (${ortho_id}, ${x}, ${y}, ${w ?? null}, ${h ?? null}, ${userId})
+        returning id, ortho_id, x, y, w, h, labeler_id, created_at
       `;
       res.status(201).json(rows[0]);
     } catch (err) {

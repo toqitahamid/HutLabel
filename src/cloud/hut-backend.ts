@@ -1,9 +1,5 @@
 import type { Ortho } from "../orthos";
-import {
-  defaultAttributes,
-  type Hut,
-  type HutAttributes,
-} from "../huts/model";
+import type { Hut } from "../huts/model";
 import { isCloudConfigured } from "./config";
 
 // The persistence seam. Huts are ROWS, not a per-image blob (FlagLabel's shape):
@@ -23,9 +19,7 @@ export interface HutBackend {
     y: number,
     w: number | null,
     h: number | null,
-    attrs: HutAttributes,
   ): Promise<Hut>;
-  updateHut(id: string, attrs: HutAttributes): Promise<void>;
   updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void>;
   deleteHut(id: string): Promise<void>;
 }
@@ -82,18 +76,10 @@ export class ApiHutBackend implements HutBackend {
     y: number,
     w: number | null,
     h: number | null,
-    attrs: HutAttributes,
   ): Promise<Hut> {
     return this.call<Hut>("/api/huts", {
       method: "POST",
-      body: JSON.stringify({ ortho_id: orthoId, x, y, w, h, ...attrs }),
-    });
-  }
-
-  async updateHut(id: string, attrs: HutAttributes): Promise<void> {
-    await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      body: JSON.stringify(attrs),
+      body: JSON.stringify({ ortho_id: orthoId, x, y, w, h }),
     });
   }
 
@@ -145,7 +131,6 @@ export class LocalDevHutBackend implements HutBackend {
     y: number,
     w: number | null,
     h: number | null,
-    attrs: HutAttributes,
   ): Promise<Hut> {
     const hut: Hut = {
       id: crypto.randomUUID(),
@@ -154,17 +139,11 @@ export class LocalDevHutBackend implements HutBackend {
       y,
       w,
       h,
-      ...attrs,
       labeler_id: "dev",
       created_at: new Date().toISOString(),
     };
     this.huts.set(hut.id, hut);
     return hut;
-  }
-
-  async updateHut(id: string, attrs: HutAttributes): Promise<void> {
-    const hut = this.huts.get(id);
-    if (hut) this.huts.set(id, { ...hut, ...attrs });
   }
 
   async updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void> {
@@ -179,11 +158,8 @@ export class LocalDevHutBackend implements HutBackend {
 
 // Pick the backend once: the /api backend when Clerk is configured (getToken
 // comes from the signed-in account), else the offline dev store.
-// `defaultAttributes` is re-exported for convenience at call sites.
 export function makeHutBackend(getToken: GetToken | null): HutBackend {
   return isCloudConfigured() && getToken
     ? new ApiHutBackend(getToken)
     : new LocalDevHutBackend();
 }
-
-export { defaultAttributes };

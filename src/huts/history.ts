@@ -1,8 +1,8 @@
-// Pure undo/redo logic for labeling operations (create/delete/box-edit/
-// attrs-edit). No React, no I/O — App.tsx owns the state and the backend
-// calls; this module only decides what an undo/redo *means* and how the two
-// stacks are threaded through an id remap. Kept separate so the invert/remap
-// rules are unit-testable without a component harness (the repo has none).
+// Pure undo/redo logic for labeling operations (create/delete/box-edit). No
+// React, no I/O — App.tsx owns the state and the backend calls; this module
+// only decides what an undo/redo *means* and how the two stacks are threaded
+// through an id remap. Kept separate so the invert/remap rules are
+// unit-testable without a component harness (the repo has none).
 //
 // Id remap matters because re-creating a hut (undoing a delete, or redoing a
 // create) always inserts a fresh server row — the new id never matches the
@@ -10,7 +10,7 @@
 // the moving entry itself) so later undo/redo steps keep targeting the right
 // row. Callers are responsible for remapping `selectedHutId` too.
 
-import type { Hut, HutAttributes } from "./model";
+import type { Hut } from "./model";
 
 type EntryBase = { entryId: string; hutId: string };
 
@@ -21,13 +21,8 @@ export type BoxEntry = EntryBase & {
   before: { x: number; y: number; w: number; h: number };
   after: { x: number; y: number; w: number; h: number };
 };
-export type AttrsEntry = EntryBase & {
-  type: "attrs";
-  before: HutAttributes;
-  after: HutAttributes;
-};
 
-export type HistoryEntry = CreateEntry | DeleteEntry | BoxEntry | AttrsEntry;
+export type HistoryEntry = CreateEntry | DeleteEntry | BoxEntry;
 
 export type HistoryState = {
   undoStack: HistoryEntry[];
@@ -46,8 +41,7 @@ const MAX_HISTORY = 200;
 export type UndoRedoAction =
   | { kind: "recreate"; snapshot: Hut }
   | { kind: "remove"; hutId: string }
-  | { kind: "setBox"; hutId: string; x: number; y: number; w: number; h: number }
-  | { kind: "setAttrs"; hutId: string; attrs: HutAttributes };
+  | { kind: "setBox"; hutId: string; x: number; y: number; w: number; h: number };
 
 export function invertForUndo(entry: HistoryEntry): UndoRedoAction {
   switch (entry.type) {
@@ -57,8 +51,6 @@ export function invertForUndo(entry: HistoryEntry): UndoRedoAction {
       return { kind: "recreate", snapshot: entry.snapshot };
     case "box":
       return { kind: "setBox", hutId: entry.hutId, ...entry.before };
-    case "attrs":
-      return { kind: "setAttrs", hutId: entry.hutId, attrs: entry.before };
   }
 }
 
@@ -70,8 +62,6 @@ export function invertForRedo(entry: HistoryEntry): UndoRedoAction {
       return { kind: "remove", hutId: entry.hutId };
     case "box":
       return { kind: "setBox", hutId: entry.hutId, ...entry.after };
-    case "attrs":
-      return { kind: "setAttrs", hutId: entry.hutId, attrs: entry.after };
   }
 }
 
@@ -151,7 +141,6 @@ export function remapEntry(entry: HistoryEntry, oldId: string, newId: string): H
       return { ...entry, hutId, snapshot };
     }
     case "box":
-    case "attrs":
       return { ...entry, hutId };
   }
 }

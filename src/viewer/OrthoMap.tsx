@@ -4,7 +4,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Ortho } from "../orthos";
 import { tileUrlTemplate } from "../orthos";
-import type { Hut, StructureType } from "../huts/model";
+import type { Hut } from "../huts/model";
 
 // Slippy-map viewer over a pre-baked tile pyramid (tiler.py) in Leaflet's
 // CRS.Simple pixel space. The single invariant that makes this correct:
@@ -48,16 +48,13 @@ const MIN_BOX_PX = 4;
 const BLANK_TILE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-// Marker fill by structure type, so a labeler reads the field at a glance.
-const STRUCTURE_COLOR: Record<StructureType, string> = {
-  dwelling_hut: "#34a382", // accent
-  feeding_platform: "#d29922", // amber
-  uncertain_mound: "#8b949e", // grey
-};
+// Marker fill: every hut is drawn in the same accent color — there's no
+// per-hut attribute left to distinguish by.
+const MARKER_COLOR = "#34a382"; // accent
 
 // Global key handlers (Space-to-pan, Z-toggle) must ignore keystrokes meant
-// for a text field elsewhere in the app (e.g. typing "z" while editing a
-// hut's structure-type select shouldn't toggle the magnifier).
+// for a text field elsewhere in the app (e.g. typing "z" while a text input
+// has focus shouldn't toggle the magnifier).
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -111,7 +108,7 @@ export function OrthoMap({
   // depends only on [focusRequest] — reading huts fresh via a ref (rather
   // than adding it to the deps) means clicking the SAME hut twice in a row
   // (nonce bump, same hutId) still re-fires without the effect also re-firing
-  // on every unrelated huts update (attribute edits, other creates).
+  // on every unrelated huts update (box edits, other creates).
   const hutsRef = useRef(huts);
   hutsRef.current = huts;
   // Latest callback without re-binding the map handlers (which would
@@ -568,7 +565,7 @@ export function OrthoMap({
     layer.clearLayers();
     for (const hut of huts) {
       const selected = hut.id === selectedHutId;
-      const color = selected ? "#ffffff" : STRUCTURE_COLOR[hut.structure_type];
+      const color = selected ? "#ffffff" : MARKER_COLOR;
       const weight = selected ? 3 : 1.5;
 
       if (hut.w != null && hut.h != null) {
@@ -580,7 +577,7 @@ export function OrthoMap({
         const rect = L.rectangle(L.latLngBounds(topLeft, bottomRight), {
           color,
           weight,
-          fillColor: STRUCTURE_COLOR[hut.structure_type],
+          fillColor: MARKER_COLOR,
           fillOpacity: 0.15,
         });
         rect.on("click", (e) => {
@@ -694,7 +691,7 @@ export function OrthoMap({
           radius: selected ? 9 : 6,
           color: selected ? "#ffffff" : "#0c0c0d",
           weight,
-          fillColor: STRUCTURE_COLOR[hut.structure_type],
+          fillColor: MARKER_COLOR,
           fillOpacity: 0.9,
         });
         marker.on("click", (e) => {

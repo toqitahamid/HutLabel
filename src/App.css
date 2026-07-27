@@ -592,13 +592,6 @@
   letter-spacing: 0.08em;
 }
 
-.rail-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.rail-select,
 .rail-input {
   font: inherit;
   font-size: 13px;
@@ -611,12 +604,10 @@
   transition: border-color var(--transition-fast) ease;
 }
 
-.rail-select:hover,
 .rail-input:hover {
   border-color: var(--border-strong);
 }
 
-.rail-select:focus-visible,
 .rail-input:focus-visible {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);

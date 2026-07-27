@@ -1,43 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  STRUCTURE_TYPES,
   TEMP_HUT_PREFIX,
-  defaultAttributes,
   hutCenter,
   isTempHutId,
-  isValidAttributes,
   isValidBox,
   isValidPosition,
 } from "./model";
-
-describe("defaultAttributes", () => {
-  it("is a valid, fully-populated attribute set", () => {
-    expect(isValidAttributes(defaultAttributes())).toBe(true);
-  });
-});
-
-describe("isValidAttributes", () => {
-  it("accepts a valid structure_type/confidence pair", () => {
-    expect(
-      isValidAttributes({ structure_type: "feeding_platform", confidence: "maybe" }),
-    ).toBe(true);
-  });
-  it("rejects an out-of-set structure_type", () => {
-    const bad = { ...defaultAttributes(), structure_type: "beaver_lodge" as never };
-    expect(isValidAttributes(bad)).toBe(false);
-  });
-  it("rejects an out-of-set confidence", () => {
-    const bad = { ...defaultAttributes(), confidence: "sure" as never };
-    expect(isValidAttributes(bad)).toBe(false);
-  });
-  it("every declared structure_type is itself valid", () => {
-    for (const s of STRUCTURE_TYPES) {
-      expect(isValidAttributes({ ...defaultAttributes(), structure_type: s })).toBe(
-        true,
-      );
-    }
-  });
-});
 
 describe("isValidPosition", () => {
   const W = 8684;

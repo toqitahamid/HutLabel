@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
-import { STRUCTURE_LABELS, type Hut } from "./model";
+import type { Hut } from "./model";
 
 // Compact per-ortho list of huts, docked at the bottom of the right rail.
 // Renders straight off the same `huts` array the map draws its markers from
 // (ordered by created_at, same as the server's GET /api/huts) — so a create,
-// delete, or attribute edit shows up here automatically, with no fetch or
+// delete, or box edit shows up here automatically, with no fetch or
 // subscription of its own.
 export function HutList({
   huts,
@@ -40,6 +40,10 @@ export function HutList({
         <div className="hut-list">
           {huts.map((hut, i) => {
             const selected = hut.id === selectedHutId;
+            // Legacy point-labeled huts (w/h null) have no extent to show —
+            // fall back to "point" rather than printing "null×null px".
+            const label =
+              hut.w != null && hut.h != null ? `${hut.w}×${hut.h} px` : "point";
             return (
               <button
                 type="button"
@@ -47,9 +51,9 @@ export function HutList({
                 ref={selected ? selectedRowRef : undefined}
                 className={"hut-row" + (selected ? " active" : "")}
                 onClick={() => onSelectHut(hut.id)}
-                title={`#${i + 1} · ${STRUCTURE_LABELS[hut.structure_type]} · ${hut.confidence}`}
+                title={`#${i + 1} · ${label}`}
               >
-                #{i + 1} · {STRUCTURE_LABELS[hut.structure_type]} · {hut.confidence}
+                #{i + 1} · {label}
               </button>
             );
           })}

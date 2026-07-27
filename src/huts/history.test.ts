@@ -13,7 +13,6 @@ import {
   takeRedo,
   takeUndo,
   updateEntry,
-  type AttrsEntry,
   type BoxEntry,
   type CreateEntry,
   type DeleteEntry,
@@ -27,8 +26,6 @@ function makeHut(overrides: Partial<Hut> = {}): Hut {
     y: 20,
     w: 30,
     h: 40,
-    structure_type: "dwelling_hut",
-    confidence: "certain",
     labeler_id: "dev",
     created_at: null,
     ...overrides,
@@ -37,12 +34,12 @@ function makeHut(overrides: Partial<Hut> = {}): Hut {
 
 describe("recordChange", () => {
   it("pushes onto the undo stack and clears the redo stack", () => {
-    const entry: AttrsEntry = {
+    const entry: BoxEntry = {
       entryId: "e1",
-      type: "attrs",
+      type: "box",
       hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 1, y: 2, w: 3, h: 4 },
+      after: { x: 5, y: 6, w: 7, h: 8 },
     };
     const withRedo = { undoStack: [], redoStack: [entry] };
     const next = recordChange(withRedo, entry);
@@ -53,12 +50,12 @@ describe("recordChange", () => {
   it("caps the undo stack so it doesn't grow unboundedly", () => {
     let history = EMPTY_HISTORY;
     for (let i = 0; i < 210; i++) {
-      const entry: AttrsEntry = {
+      const entry: BoxEntry = {
         entryId: `e${i}`,
-        type: "attrs",
+        type: "box",
         hutId: "hut-1",
-        before: { structure_type: "dwelling_hut", confidence: "certain" },
-        after: { structure_type: "feeding_platform", confidence: "certain" },
+        before: { x: 1, y: 2, w: 3, h: 4 },
+        after: { x: 5, y: 6, w: 7, h: 8 },
       };
       history = recordChange(history, entry);
     }
@@ -70,12 +67,12 @@ describe("recordChange", () => {
 
 describe("dropEntry / updateEntry", () => {
   it("removes an entry by id from whichever stack it's in", () => {
-    const entry: AttrsEntry = {
+    const entry: BoxEntry = {
       entryId: "e1",
-      type: "attrs",
+      type: "box",
       hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 1, y: 2, w: 3, h: 4 },
+      after: { x: 5, y: 6, w: 7, h: 8 },
     };
     const history = { undoStack: [entry], redoStack: [] };
     expect(dropEntry(history, "e1")).toEqual(EMPTY_HISTORY);
@@ -83,14 +80,14 @@ describe("dropEntry / updateEntry", () => {
   });
 
   it("rewrites an entry in place by id, leaving others untouched", () => {
-    const a: AttrsEntry = {
+    const a: BoxEntry = {
       entryId: "a",
-      type: "attrs",
+      type: "box",
       hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 1, y: 2, w: 3, h: 4 },
+      after: { x: 5, y: 6, w: 7, h: 8 },
     };
-    const b: AttrsEntry = { ...a, entryId: "b" };
+    const b: BoxEntry = { ...a, entryId: "b" };
     const history = { undoStack: [a, b], redoStack: [] };
     const next = updateEntry(history, "a", (e) => ({ ...e, hutId: "hut-2" }));
     expect(next.undoStack[0].hutId).toBe("hut-2");
@@ -100,14 +97,14 @@ describe("dropEntry / updateEntry", () => {
 
 describe("takeUndo / takeRedo", () => {
   it("pops the most recent entry and returns the rest", () => {
-    const first: AttrsEntry = {
+    const first: BoxEntry = {
       entryId: "first",
-      type: "attrs",
+      type: "box",
       hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 1, y: 2, w: 3, h: 4 },
+      after: { x: 5, y: 6, w: 7, h: 8 },
     };
-    const second: AttrsEntry = { ...first, entryId: "second" };
+    const second: BoxEntry = { ...first, entryId: "second" };
     const history = { undoStack: [first, second], redoStack: [] };
     const popped = takeUndo(history);
     expect(popped?.entry.entryId).toBe("second");
@@ -120,12 +117,12 @@ describe("takeUndo / takeRedo", () => {
   });
 
   it("settleUndo/settleRedo move an entry to the opposite stack", () => {
-    const entry: AttrsEntry = {
+    const entry: BoxEntry = {
       entryId: "e1",
-      type: "attrs",
+      type: "box",
       hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 1, y: 2, w: 3, h: 4 },
+      after: { x: 5, y: 6, w: 7, h: 8 },
     };
     const afterUndo = settleUndo(EMPTY_HISTORY, entry);
     expect(afterUndo.redoStack).toEqual([entry]);
@@ -163,30 +160,10 @@ describe("invertForUndo / invertForRedo", () => {
     expect(invertForUndo(entry)).toEqual({ kind: "setBox", hutId: "hut-1", x: 1, y: 2, w: 3, h: 4 });
     expect(invertForRedo(entry)).toEqual({ kind: "setBox", hutId: "hut-1", x: 5, y: 6, w: 7, h: 8 });
   });
-
-  it("attrs: undo applies before, redo applies after", () => {
-    const entry: AttrsEntry = {
-      entryId: "e1",
-      type: "attrs",
-      hutId: "hut-1",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "maybe" },
-    };
-    expect(invertForUndo(entry)).toEqual({
-      kind: "setAttrs",
-      hutId: "hut-1",
-      attrs: { structure_type: "dwelling_hut", confidence: "certain" },
-    });
-    expect(invertForRedo(entry)).toEqual({
-      kind: "setAttrs",
-      hutId: "hut-1",
-      attrs: { structure_type: "feeding_platform", confidence: "maybe" },
-    });
-  });
 });
 
 describe("remapEntry / remapHistory", () => {
-  it("rewrites hutId on box/attrs entries", () => {
+  it("rewrites hutId on box entries", () => {
     const entry: BoxEntry = {
       entryId: "e1",
       type: "box",
@@ -228,15 +205,15 @@ describe("remapEntry / remapHistory", () => {
       before: { x: 1, y: 2, w: 3, h: 4 },
       after: { x: 5, y: 6, w: 7, h: 8 },
     };
-    const attrsEntry: AttrsEntry = {
+    const otherBoxEntry: BoxEntry = {
       entryId: "e2",
-      type: "attrs",
+      type: "box",
       hutId: "old-id",
-      before: { structure_type: "dwelling_hut", confidence: "certain" },
-      after: { structure_type: "feeding_platform", confidence: "certain" },
+      before: { x: 9, y: 10, w: 11, h: 12 },
+      after: { x: 13, y: 14, w: 15, h: 16 },
     };
-    const untouched: AttrsEntry = { ...attrsEntry, entryId: "e3", hutId: "unrelated-id" };
-    const history = { undoStack: [boxEntry, untouched], redoStack: [attrsEntry] };
+    const untouched: BoxEntry = { ...otherBoxEntry, entryId: "e3", hutId: "unrelated-id" };
+    const history = { undoStack: [boxEntry, untouched], redoStack: [otherBoxEntry] };
     const next = remapHistory(history, "old-id", "new-id");
     expect(next.undoStack[0].hutId).toBe("new-id");
     expect(next.undoStack[1].hutId).toBe("unrelated-id");
