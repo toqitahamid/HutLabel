@@ -111,6 +111,11 @@ export function OrthoMap({
   // on every unrelated huts update (box edits, other creates).
   const hutsRef = useRef(huts);
   hutsRef.current = huts;
+  // Same idea for the magnifier redraw (see drawMagnifierHuts below): it can
+  // run from the magnifier-build effect, whose deps don't include
+  // selectedHutId, so it must read the current selection via a ref too.
+  const selectedHutIdRef = useRef(selectedHutId);
+  selectedHutIdRef.current = selectedHutId;
   // Latest callback without re-binding the map handlers (which would
   // otherwise force a map teardown just because a parent re-rendered).
   const onPlaceRef = useRef(onPlace);
@@ -149,6 +154,10 @@ export function OrthoMap({
   // first render.
   const magnifierContainerRef = useRef<HTMLDivElement | null>(null);
   const magnifierMapRef = useRef<L.Map | null>(null);
+  // Saved-box mirror layer for the magnifier (separate from magPreviewRectRef,
+  // which only ever holds the live in-progress draw rectangle). Built
+  // alongside the magnifier map itself — see the magnifier-build effect.
+  const magnifierMarkerLayerRef = useRef<L.LayerGroup | null>(null);
   const [magnifierOn, setMagnifierOn] = useState(true); // Z toggles this
   const magnifierOnRef = useRef(true);
   const [cursorOverMap, setCursorOverMap] = useState(false);
@@ -428,6 +437,37 @@ export function OrthoMap({
     map.flyToBounds(bounds, { maxZoom: max_level + 1, padding: [80, 80], duration: 0.4 });
   }, [focusRequest, ortho]);
 
+  // Mirrors saved BOX huts onto the magnifier's own marker layer — a labeler
+  // judges box tightness there, so the magnifier needs the same rectangles
+  // the main map draws (point huts aren't mirrored; there's no tightness to
+  // judge and the magnifier stays a viewport, not a second labeling surface).
+  // Reads huts/selection via refs rather than closing over props: this is
+  // called from two effects with different dep arrays (the huts-redraw
+  // effect below, and the magnifier-build effect right after this), so it
+  // must be correct no matter which one's closure last ran.
+  function drawMagnifierHuts() {
+    const mag = magnifierMapRef.current;
+    const layer = magnifierMarkerLayerRef.current;
+    if (!mag || !layer) return; // magnifier not built yet (or torn down)
+    layer.clearLayers();
+    for (const hut of hutsRef.current) {
+      if (hut.w == null || hut.h == null) continue;
+      const selected = hut.id === selectedHutIdRef.current;
+      const topLeft = mag.unproject([hut.x, hut.y], ortho.max_level);
+      const bottomRight = mag.unproject(
+        [hut.x + hut.w, hut.y + hut.h],
+        ortho.max_level,
+      );
+      L.rectangle(L.latLngBounds(topLeft, bottomRight), {
+        color: selected ? "#ffffff" : MARKER_COLOR,
+        weight: selected ? 3 : 1.5,
+        fillColor: MARKER_COLOR,
+        fillOpacity: 0.15,
+        interactive: false, // viewport only — no click/select/drag here
+      }).addTo(layer);
+    }
+  }
+
   // The magnifier's own Leaflet instance: same tile pyramid, independent map
   // object, mounted into magnifierSlotEl (portaled from the right rail) once
   // that node exists. Separate from the main-map effect above because the
@@ -471,15 +511,24 @@ export function OrthoMap({
       errorTileUrl: BLANK_TILE,
     }).addTo(magnifier);
 
+    const magnifierMarkerLayer = L.layerGroup().addTo(magnifier);
+    magnifierMarkerLayerRef.current = magnifierMarkerLayer;
+
     magnifier.setView(bounds.getCenter(), max_level, { animate: false });
     // The panel is sized by CSS (and may have just appeared via the portal);
     // Leaflet needs a nudge once that layout has actually taken effect.
     const raf = requestAnimationFrame(() => magnifier.invalidateSize());
+    // This map instance is brand new (or just got rebuilt) — the huts-redraw
+    // effect below won't re-run just because THIS effect did, so the newly
+    // (re)built magnifier needs its own draw pass here rather than waiting
+    // for the next huts/selection change.
+    drawMagnifierHuts();
 
     return () => {
       cancelAnimationFrame(raf);
-      magnifier.remove();
+      magnifier.remove(); // also removes magnifierMarkerLayer, no separate cleanup needed
       magnifierMapRef.current = null;
+      magnifierMarkerLayerRef.current = null; // died with its map
       magPreviewRectRef.current = null; // died with its map
     };
   }, [ortho, magnifierSlotEl]);
@@ -701,6 +750,10 @@ export function OrthoMap({
         marker.addTo(layer);
       }
     }
+    // Mirror the saved boxes onto the magnifier too — a no-op if it isn't
+    // built yet (drawMagnifierHuts no-ops on missing refs); the
+    // magnifier-build effect covers that case with its own draw pass.
+    drawMagnifierHuts();
   }, [huts, selectedHutId, ortho.max_level]);
 
   // Cursor hints what's active: grab/grabbing while Space-panning, the
