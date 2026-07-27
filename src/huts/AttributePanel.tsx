@@ -31,8 +31,8 @@ export function AttributePanel({
         <div className="rail-section">
           <p className="rail-count">{huts.length} huts on this ortho</p>
           <p className="rail-hint">
-            Click a bull's-eye on the map to drop a hut. Click an existing marker
-            to edit or delete it.
+            Drag on the map to draw a box around a hut. Click an existing box
+            to select, resize, or delete it.
           </p>
         </div>
         <HutList huts={huts} selectedHutId={selectedHutId} onSelectHut={onFocusHut} />
