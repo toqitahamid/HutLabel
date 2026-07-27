@@ -290,7 +290,13 @@ export function OrthoMap({
         if (magPreviewRectRef.current) {
           magPreviewRectRef.current.setBounds(previewBounds);
         } else {
-          magPreviewRectRef.current = L.rectangle(previewBounds, style).addTo(mag);
+          // Accent green here — white was invisible against the magnifier's
+          // white crosshair (the visible corner sits at its center).
+          magPreviewRectRef.current = L.rectangle(previewBounds, {
+            ...style,
+            color: MARKER_COLOR,
+            weight: 2.5,
+          }).addTo(mag);
         }
       }
     });
