@@ -29,7 +29,9 @@ export function AttributePanel({
       <aside className="right-rail">
         {zoomSlot}
         <div className="rail-section">
-          <p className="rail-count">{huts.length} huts on this ortho</p>
+          <p className="rail-count">
+            {huts.length} hut{huts.length === 1 ? "" : "s"} on this ortho
+          </p>
           <p className="rail-hint">
             Drag on the map to draw a box around a hut. Click an existing box
             to select, resize, or delete it.
