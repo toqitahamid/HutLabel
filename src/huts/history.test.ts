@@ -151,6 +151,18 @@ describe("invertForUndo / invertForRedo", () => {
     expect(invertForRedo(entry)).toEqual({ kind: "remove", hutId: "hut-1" });
   });
 
+  it("delete: the recreate snapshot preserves a non-default confidence", () => {
+    // A DeleteEntry snapshots the full Hut (not just geometry), so an "unsure"
+    // hut's flag rides along in the "recreate" action — App.tsx's handleUndo
+    // passes snapshot.confidence into createHut so undoing the delete
+    // restores it instead of falling back to the server's "certain" default.
+    const snapshot = makeHut({ confidence: "unsure" });
+    const entry: DeleteEntry = { entryId: "e1", type: "delete", hutId: "hut-1", snapshot };
+    const action = invertForUndo(entry);
+    expect(action).toEqual({ kind: "recreate", snapshot });
+    expect(action.kind === "recreate" && action.snapshot.confidence).toBe("unsure");
+  });
+
   it("box: undo applies before, redo applies after", () => {
     const entry: BoxEntry = {
       entryId: "e1",
