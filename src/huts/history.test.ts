@@ -14,6 +14,7 @@ import {
   takeUndo,
   updateEntry,
   type BoxEntry,
+  type ConfidenceEntry,
   type CreateEntry,
   type DeleteEntry,
 } from "./history";
@@ -26,6 +27,7 @@ function makeHut(overrides: Partial<Hut> = {}): Hut {
     y: 20,
     w: 30,
     h: 40,
+    confidence: "certain",
     labeler_id: "dev",
     created_at: null,
     ...overrides,
@@ -160,6 +162,26 @@ describe("invertForUndo / invertForRedo", () => {
     expect(invertForUndo(entry)).toEqual({ kind: "setBox", hutId: "hut-1", x: 1, y: 2, w: 3, h: 4 });
     expect(invertForRedo(entry)).toEqual({ kind: "setBox", hutId: "hut-1", x: 5, y: 6, w: 7, h: 8 });
   });
+
+  it("confidence: undo applies from, redo applies to", () => {
+    const entry: ConfidenceEntry = {
+      entryId: "e1",
+      type: "confidence",
+      hutId: "hut-1",
+      from: "certain",
+      to: "unsure",
+    };
+    expect(invertForUndo(entry)).toEqual({
+      kind: "setConfidence",
+      hutId: "hut-1",
+      confidence: "certain",
+    });
+    expect(invertForRedo(entry)).toEqual({
+      kind: "setConfidence",
+      hutId: "hut-1",
+      confidence: "unsure",
+    });
+  });
 });
 
 describe("remapEntry / remapHistory", () => {
@@ -174,6 +196,19 @@ describe("remapEntry / remapHistory", () => {
     const remapped = remapEntry(entry, "old-id", "new-id");
     expect(remapped.hutId).toBe("new-id");
     expect(remapped).not.toBe(entry); // unchanged entries are untouched, but a rewrite is a new object
+  });
+
+  it("rewrites hutId on confidence entries", () => {
+    const entry: ConfidenceEntry = {
+      entryId: "e1",
+      type: "confidence",
+      hutId: "old-id",
+      from: "certain",
+      to: "unsure",
+    };
+    const remapped = remapEntry(entry, "old-id", "new-id");
+    expect(remapped.hutId).toBe("new-id");
+    expect(remapped).not.toBe(entry);
   });
 
   it("leaves entries referencing a different hut untouched", () => {
@@ -197,7 +232,7 @@ describe("remapEntry / remapHistory", () => {
     expect(remapped.snapshot.x).toBe(snapshot.x);
   });
 
-  it("remapHistory rewrites every matching entry across both stacks", () => {
+  it("remapHistory rewrites every matching entry across both stacks, mixed kinds included", () => {
     const boxEntry: BoxEntry = {
       entryId: "e1",
       type: "box",
@@ -205,15 +240,15 @@ describe("remapEntry / remapHistory", () => {
       before: { x: 1, y: 2, w: 3, h: 4 },
       after: { x: 5, y: 6, w: 7, h: 8 },
     };
-    const otherBoxEntry: BoxEntry = {
+    const confidenceEntry: ConfidenceEntry = {
       entryId: "e2",
-      type: "box",
+      type: "confidence",
       hutId: "old-id",
-      before: { x: 9, y: 10, w: 11, h: 12 },
-      after: { x: 13, y: 14, w: 15, h: 16 },
+      from: "certain",
+      to: "unsure",
     };
-    const untouched: BoxEntry = { ...otherBoxEntry, entryId: "e3", hutId: "unrelated-id" };
-    const history = { undoStack: [boxEntry, untouched], redoStack: [otherBoxEntry] };
+    const untouched: ConfidenceEntry = { ...confidenceEntry, entryId: "e3", hutId: "unrelated-id" };
+    const history = { undoStack: [boxEntry, untouched], redoStack: [confidenceEntry] };
     const next = remapHistory(history, "old-id", "new-id");
     expect(next.undoStack[0].hutId).toBe("new-id");
     expect(next.undoStack[1].hutId).toBe("unrelated-id");

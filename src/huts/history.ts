@@ -1,8 +1,8 @@
-// Pure undo/redo logic for labeling operations (create/delete/box-edit). No
-// React, no I/O — App.tsx owns the state and the backend calls; this module
-// only decides what an undo/redo *means* and how the two stacks are threaded
-// through an id remap. Kept separate so the invert/remap rules are
-// unit-testable without a component harness (the repo has none).
+// Pure undo/redo logic for labeling operations (create/delete/box-edit/
+// confidence-flip). No React, no I/O — App.tsx owns the state and the backend
+// calls; this module only decides what an undo/redo *means* and how the two
+// stacks are threaded through an id remap. Kept separate so the invert/remap
+// rules are unit-testable without a component harness (the repo has none).
 //
 // Id remap matters because re-creating a hut (undoing a delete, or redoing a
 // create) always inserts a fresh server row — the new id never matches the
@@ -10,7 +10,7 @@
 // the moving entry itself) so later undo/redo steps keep targeting the right
 // row. Callers are responsible for remapping `selectedHutId` too.
 
-import type { Hut } from "./model";
+import type { Confidence, Hut } from "./model";
 
 type EntryBase = { entryId: string; hutId: string };
 
@@ -21,8 +21,16 @@ export type BoxEntry = EntryBase & {
   before: { x: number; y: number; w: number; h: number };
   after: { x: number; y: number; w: number; h: number };
 };
+// A confidence flip (the C shortcut, or the panel toggle) — there are only
+// two values, so "from"/"to" reads clearer here than the box entry's
+// range-shaped "before"/"after".
+export type ConfidenceEntry = EntryBase & {
+  type: "confidence";
+  from: Confidence;
+  to: Confidence;
+};
 
-export type HistoryEntry = CreateEntry | DeleteEntry | BoxEntry;
+export type HistoryEntry = CreateEntry | DeleteEntry | BoxEntry | ConfidenceEntry;
 
 export type HistoryState = {
   undoStack: HistoryEntry[];
@@ -41,7 +49,8 @@ const MAX_HISTORY = 200;
 export type UndoRedoAction =
   | { kind: "recreate"; snapshot: Hut }
   | { kind: "remove"; hutId: string }
-  | { kind: "setBox"; hutId: string; x: number; y: number; w: number; h: number };
+  | { kind: "setBox"; hutId: string; x: number; y: number; w: number; h: number }
+  | { kind: "setConfidence"; hutId: string; confidence: Confidence };
 
 export function invertForUndo(entry: HistoryEntry): UndoRedoAction {
   switch (entry.type) {
@@ -51,6 +60,8 @@ export function invertForUndo(entry: HistoryEntry): UndoRedoAction {
       return { kind: "recreate", snapshot: entry.snapshot };
     case "box":
       return { kind: "setBox", hutId: entry.hutId, ...entry.before };
+    case "confidence":
+      return { kind: "setConfidence", hutId: entry.hutId, confidence: entry.from };
   }
 }
 
@@ -62,6 +73,8 @@ export function invertForRedo(entry: HistoryEntry): UndoRedoAction {
       return { kind: "remove", hutId: entry.hutId };
     case "box":
       return { kind: "setBox", hutId: entry.hutId, ...entry.after };
+    case "confidence":
+      return { kind: "setConfidence", hutId: entry.hutId, confidence: entry.to };
   }
 }
 
@@ -141,6 +154,7 @@ export function remapEntry(entry: HistoryEntry, oldId: string, newId: string): H
       return { ...entry, hutId, snapshot };
     }
     case "box":
+    case "confidence":
       return { ...entry, hutId };
   }
 }

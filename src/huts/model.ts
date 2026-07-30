@@ -1,12 +1,28 @@
 // The hut geometry schema. A hut is purely a box (or point) label — no manual
-// attributes; extent/size comes from the box itself, and the SAM mask derived
-// offline from it on Delta, not a per-hut dropdown.
+// structure-type attribute; extent/size comes from the box itself, and the SAM
+// mask derived offline from it on Delta, not a per-hut dropdown. Confidence is
+// the one manual field left: is this actually a hut, or a doubtful call the PI
+// should double-check?
 //
-// Pure module (no React, no I/O) so the geometry validation is unit-testable
-// and shared by the UI and the /api functions.
+// Pure module (no React, no I/O) so the geometry/confidence validation is
+// unit-testable and shared by the UI and the /api functions.
 
-// A hut as persisted: identity + geometry + provenance. Geometry is in native
-// crop/image pixels (the ortho's full-resolution space):
+// Whether the labeler is sure this box is a hut. Every hut starts "certain"
+// (the DB column defaults to it — see scripts/migrations/003-huts-confidence.sql);
+// the labeler flips it to "unsure" (the C shortcut, or the panel toggle) when a
+// box is a doubtful call, so the PI can scan for exactly those later.
+export const CONFIDENCES = ["certain", "unsure"] as const;
+export type Confidence = (typeof CONFIDENCES)[number];
+export const DEFAULT_CONFIDENCE: Confidence = "certain";
+
+// Guard for a PATCH body's confidence field, so a malformed value never
+// silently persists.
+export function isValidConfidence(v: unknown): v is Confidence {
+  return (CONFIDENCES as readonly unknown[]).includes(v);
+}
+
+// A hut as persisted: identity + geometry + confidence + provenance. Geometry
+// is in native crop/image pixels (the ortho's full-resolution space):
 //   - box label:  (x, y) = top-left corner, (w, h) = size. This is the default —
 //     a box is the strongest SAM prompt AND a ready detection label, and its
 //     extent gives real size (mask/area) instead of a guessed diameter.
@@ -20,6 +36,7 @@ export type Hut = {
   y: number;
   w: number | null;
   h: number | null;
+  confidence: Confidence;
   labeler_id: string | null;
   created_at: string | null;
 };

@@ -1,13 +1,15 @@
-import { hutCenter, type Hut } from "./model";
+import { CONFIDENCES, hutCenter, type Hut } from "./model";
 import { HutList } from "./HutList";
 
-// Side panel for the selected hut. A hut is a pure box (or point) label, so
-// this panel is a thin shell: the magnifier slot, the hut's header/dimensions
-// readout, the delete button, and the hut list.
+// Side panel for the selected hut. A hut is a pure box (or point) label, with
+// one manual field left — confidence — so this panel is mostly a thin shell:
+// the magnifier slot, the hut's header/dimensions readout, the confidence
+// toggle, the delete button, and the hut list.
 export function AttributePanel({
   hut,
   huts,
   selectedHutId,
+  onToggleConfidence,
   onDelete,
   onFocusHut,
   zoomSlot,
@@ -15,6 +17,9 @@ export function AttributePanel({
   hut: Hut | null;
   huts: Hut[];
   selectedHutId: string | null;
+  // Flips the selected hut's certain/unsure flag — same handler the C
+  // shortcut calls, so the panel button and the key are always in sync.
+  onToggleConfidence: () => void;
   onDelete: () => void;
   // Row click in the hut list below: selects that hut AND re-centers the map
   // on it (App's focusRequest signal, consumed by OrthoMap's fly-to effect).
@@ -53,6 +58,25 @@ export function AttributePanel({
         <span className="rail-coord">
           {isBox ? `${hut.w}×${hut.h} px` : `${cx}, ${cy}`}
         </span>
+      </div>
+
+      <div className="rail-section">
+        <span className="rail-label">Confidence</span>
+        <div className="confidence-toggle" role="group" aria-label="Confidence">
+          {CONFIDENCES.map((c) => (
+            <button
+              type="button"
+              key={c}
+              className={"confidence-option" + (c === "unsure" ? " unsure" : "")}
+              aria-pressed={hut.confidence === c}
+              onClick={() => {
+                if (hut.confidence !== c) onToggleConfidence();
+              }}
+            >
+              {c === "certain" ? "Certain" : "Unsure"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="rail-section">

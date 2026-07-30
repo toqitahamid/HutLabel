@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONFIDENCES,
+  DEFAULT_CONFIDENCE,
   TEMP_HUT_PREFIX,
   hutCenter,
   isTempHutId,
   isValidBox,
+  isValidConfidence,
   isValidPosition,
 } from "./model";
 
@@ -43,6 +46,22 @@ describe("isTempHutId", () => {
   });
   it("rejects a server-assigned uuid", () => {
     expect(isTempHutId(crypto.randomUUID())).toBe(false);
+  });
+});
+
+describe("isValidConfidence", () => {
+  it("accepts the two known values", () => {
+    expect(isValidConfidence("certain")).toBe(true);
+    expect(isValidConfidence("unsure")).toBe(true);
+    expect(CONFIDENCES).toContain(DEFAULT_CONFIDENCE);
+  });
+  it("rejects the old removed value, other strings, and non-strings", () => {
+    expect(isValidConfidence("maybe")).toBe(false); // the pre-d0c6e73 second value
+    expect(isValidConfidence("Certain")).toBe(false);
+    expect(isValidConfidence("")).toBe(false);
+    expect(isValidConfidence(undefined)).toBe(false);
+    expect(isValidConfidence(null)).toBe(false);
+    expect(isValidConfidence(1)).toBe(false);
   });
 });
 

@@ -4,7 +4,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Ortho } from "../orthos";
 import { tileUrlTemplate } from "../orthos";
-import type { Hut } from "../huts/model";
+import type { Confidence, Hut } from "../huts/model";
 
 // Slippy-map viewer over a pre-baked tile pyramid (tiler.py) in Leaflet's
 // CRS.Simple pixel space. The single invariant that makes this correct:
@@ -48,9 +48,19 @@ const MIN_BOX_PX = 4;
 const BLANK_TILE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-// Marker fill: every hut is drawn in the same accent color — there's no
-// per-hut attribute left to distinguish by.
-const MARKER_COLOR = "#34a382"; // accent
+// Marker fill by confidence — the one manual field left on a hut. "certain"
+// (the common case) draws in the same accent color as everything else;
+// "unsure" draws amber so the PI can scan the map for doubtful boxes at a
+// glance, the same way the hut list flags them with a suffix.
+const MARKER_COLOR = "#34a382"; // accent, certain
+const UNSURE_COLOR = "#d29922"; // amber, unsure
+
+// Single source of truth for confidence -> color, so the main map, its
+// selected-box handles, and the magnifier mirror can never draw the same hut
+// in two different colors.
+function confidenceColor(confidence: Confidence): string {
+  return confidence === "unsure" ? UNSURE_COLOR : MARKER_COLOR;
+}
 
 // Global key handlers (Space-to-pan, Z-toggle) must ignore keystrokes meant
 // for a text field elsewhere in the app (e.g. typing "z" while a text input
@@ -459,15 +469,16 @@ export function OrthoMap({
     for (const hut of hutsRef.current) {
       if (hut.w == null || hut.h == null) continue;
       const selected = hut.id === selectedHutIdRef.current;
+      const color = confidenceColor(hut.confidence);
       const topLeft = mag.unproject([hut.x, hut.y], ortho.max_level);
       const bottomRight = mag.unproject(
         [hut.x + hut.w, hut.y + hut.h],
         ortho.max_level,
       );
       L.rectangle(L.latLngBounds(topLeft, bottomRight), {
-        color: selected ? "#ffffff" : MARKER_COLOR,
+        color: selected ? "#ffffff" : color,
         weight: selected ? 3 : 1.5,
-        fillColor: MARKER_COLOR,
+        fillColor: color,
         fillOpacity: 0.15,
         interactive: false, // viewport only — no click/select/drag here
       }).addTo(layer);
@@ -620,7 +631,8 @@ export function OrthoMap({
     layer.clearLayers();
     for (const hut of huts) {
       const selected = hut.id === selectedHutId;
-      const color = selected ? "#ffffff" : MARKER_COLOR;
+      const hutColor = confidenceColor(hut.confidence);
+      const color = selected ? "#ffffff" : hutColor;
       const weight = selected ? 3 : 1.5;
 
       if (hut.w != null && hut.h != null) {
@@ -632,7 +644,7 @@ export function OrthoMap({
         const rect = L.rectangle(L.latLngBounds(topLeft, bottomRight), {
           color,
           weight,
-          fillColor: MARKER_COLOR,
+          fillColor: hutColor,
           fillOpacity: 0.15,
         });
         rect.on("click", (e) => {
@@ -746,7 +758,7 @@ export function OrthoMap({
           radius: selected ? 9 : 6,
           color: selected ? "#ffffff" : "#0c0c0d",
           weight,
-          fillColor: MARKER_COLOR,
+          fillColor: hutColor,
           fillOpacity: 0.9,
         });
         marker.on("click", (e) => {

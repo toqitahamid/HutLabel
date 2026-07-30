@@ -20,7 +20,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // would mean a json_agg, and grouping in JS is simpler to get right here.
   const [orthoRows, hutRows] = await Promise.all([
     db`select id, site, visit, width, height, max_level from orthos order by site asc, visit asc`,
-    db`select id, ortho_id, x, y, w, h, labeler_id, created_at
+    db`select id, ortho_id, x, y, w, h, confidence, labeler_id, created_at
        from huts order by ortho_id asc, created_at asc`,
   ]);
 
@@ -46,6 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       y: h.y,
       w: h.w,
       h: h.h,
+      confidence: h.confidence,
       labeler_id: h.labeler_id,
       created_at: h.created_at,
     })),

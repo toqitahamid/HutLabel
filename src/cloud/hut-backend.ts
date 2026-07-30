@@ -1,5 +1,5 @@
 import type { Ortho } from "../orthos";
-import type { Hut } from "../huts/model";
+import { DEFAULT_CONFIDENCE, type Confidence, type Hut } from "../huts/model";
 import { isCloudConfigured } from "./config";
 
 // The persistence seam. Huts are ROWS, not a per-image blob (FlagLabel's shape):
@@ -13,14 +13,20 @@ export interface HutBackend {
   listOrthos(): Promise<Ortho[]>;
   setOrthoDone(id: string, done: boolean): Promise<{ done_at: string | null }>;
   listHuts(orthoId: string): Promise<Hut[]>;
+  // `confidence` is optional: the normal draw path omits it and lets the
+  // server default to "certain"; undo-of-delete / redo-of-create pass the
+  // hut's snapshotted confidence explicitly, so recreating an "unsure" hut
+  // doesn't silently forget the flag.
   createHut(
     orthoId: string,
     x: number,
     y: number,
     w: number | null,
     h: number | null,
+    confidence?: Confidence,
   ): Promise<Hut>;
   updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void>;
+  updateHutConfidence(id: string, confidence: Confidence): Promise<void>;
   deleteHut(id: string): Promise<void>;
 }
 
@@ -76,10 +82,11 @@ export class ApiHutBackend implements HutBackend {
     y: number,
     w: number | null,
     h: number | null,
+    confidence?: Confidence,
   ): Promise<Hut> {
     return this.call<Hut>("/api/huts", {
       method: "POST",
-      body: JSON.stringify({ ortho_id: orthoId, x, y, w, h }),
+      body: JSON.stringify({ ortho_id: orthoId, x, y, w, h, ...(confidence ? { confidence } : {}) }),
     });
   }
 
@@ -87,6 +94,13 @@ export class ApiHutBackend implements HutBackend {
     await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify({ x, y, w, h }),
+    });
+  }
+
+  async updateHutConfidence(id: string, confidence: Confidence): Promise<void> {
+    await this.call<{ id: string }>(`/api/huts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ confidence }),
     });
   }
 
@@ -131,6 +145,7 @@ export class LocalDevHutBackend implements HutBackend {
     y: number,
     w: number | null,
     h: number | null,
+    confidence?: Confidence,
   ): Promise<Hut> {
     const hut: Hut = {
       id: crypto.randomUUID(),
@@ -139,6 +154,7 @@ export class LocalDevHutBackend implements HutBackend {
       y,
       w,
       h,
+      confidence: confidence ?? DEFAULT_CONFIDENCE,
       labeler_id: "dev",
       created_at: new Date().toISOString(),
     };
@@ -149,6 +165,11 @@ export class LocalDevHutBackend implements HutBackend {
   async updateHutBox(id: string, x: number, y: number, w: number, h: number): Promise<void> {
     const hut = this.huts.get(id);
     if (hut) this.huts.set(id, { ...hut, x, y, w, h });
+  }
+
+  async updateHutConfidence(id: string, confidence: Confidence): Promise<void> {
+    const hut = this.huts.get(id);
+    if (hut) this.huts.set(id, { ...hut, confidence });
   }
 
   async deleteHut(id: string): Promise<void> {

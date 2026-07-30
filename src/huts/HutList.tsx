@@ -4,8 +4,8 @@ import type { Hut } from "./model";
 // Compact per-ortho list of huts, docked at the bottom of the right rail.
 // Renders straight off the same `huts` array the map draws its markers from
 // (ordered by created_at, same as the server's GET /api/huts) — so a create,
-// delete, or box edit shows up here automatically, with no fetch or
-// subscription of its own.
+// delete, box edit, or confidence flip shows up here automatically, with no
+// fetch or subscription of its own.
 export function HutList({
   huts,
   selectedHutId,
@@ -42,8 +42,13 @@ export function HutList({
             const selected = hut.id === selectedHutId;
             // Legacy point-labeled huts (w/h null) have no extent to show —
             // fall back to "point" rather than printing "null×null px".
-            const label =
+            const extent =
               hut.w != null && hut.h != null ? `${hut.w}×${hut.h} px` : "point";
+            // Certain rows stay clean (the common case); an "unsure" suffix
+            // is the signal worth scanning the list for, so it's the only
+            // one that gets a marker. Appended to the same `label` used for
+            // both the row text and its title, so the two never drift apart.
+            const label = hut.confidence === "unsure" ? `${extent} · unsure` : extent;
             return (
               <button
                 type="button"

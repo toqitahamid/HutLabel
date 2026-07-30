@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { isValidConfidence, type Confidence } from "../../src/huts/model.js";
 import { requireUser, sql } from "../_lib.js";
 
 // GET  /api/huts?ortho_id=... — all huts on one ortho (any signed-in labeler).
@@ -14,7 +15,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
     const rows = await sql()`
-      select id, ortho_id, x, y, w, h, labeler_id, created_at
+      select id, ortho_id, x, y, w, h, confidence, labeler_id, created_at
       from huts where ortho_id = ${orthoId}
       order by created_at asc
     `;
@@ -29,8 +30,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       y?: unknown;
       w?: unknown;
       h?: unknown;
+      confidence?: unknown;
     };
-    const { ortho_id, x, y, w, h } = body;
+    const { ortho_id, x, y, w, h, confidence } = body;
 
     const isInt = (v: unknown): v is number => Number.isInteger(v);
     const validGeometry =
@@ -40,17 +42,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (y as number) >= 0 &&
       // point (w = h = null) or box (both positive ints)
       ((w == null && h == null) || (isInt(w) && isInt(h) && w > 0 && h > 0));
+    // confidence is OPTIONAL here: the normal draw path omits it and lets the
+    // DB column default to "certain" (scripts/migrations/003-huts-confidence.sql);
+    // undo-of-delete / redo-of-create (App.tsx's handleUndo/handleRedo) pass
+    // the hut's snapshotted confidence explicitly, so recreating a hut that
+    // had been flagged "unsure" doesn't silently forget that.
+    const hasConfidence = confidence !== undefined;
+    if (hasConfidence && !isValidConfidence(confidence)) {
+      res.status(400).json({ error: "Invalid confidence" });
+      return;
+    }
     if (typeof ortho_id !== "string" || !ortho_id || !validGeometry) {
       res.status(400).json({ error: "Invalid hut payload" });
       return;
     }
 
     try {
-      const rows = await sql()`
-        insert into huts (ortho_id, x, y, w, h, labeler_id)
-        values (${ortho_id}, ${x}, ${y}, ${w ?? null}, ${h ?? null}, ${userId})
-        returning id, ortho_id, x, y, w, h, labeler_id, created_at
-      `;
+      const rows = hasConfidence
+        ? await sql()`
+            insert into huts (ortho_id, x, y, w, h, confidence, labeler_id)
+            values (${ortho_id}, ${x}, ${y}, ${w ?? null}, ${h ?? null}, ${confidence as Confidence}, ${userId})
+            returning id, ortho_id, x, y, w, h, confidence, labeler_id, created_at
+          `
+        : await sql()`
+            insert into huts (ortho_id, x, y, w, h, labeler_id)
+            values (${ortho_id}, ${x}, ${y}, ${w ?? null}, ${h ?? null}, ${userId})
+            returning id, ortho_id, x, y, w, h, confidence, labeler_id, created_at
+          `;
       res.status(201).json(rows[0]);
     } catch (err) {
       // FK violation = unknown ortho; anything else is a real 500.
