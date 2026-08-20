@@ -169,7 +169,18 @@ async function main() {
     for (const ortho of skipped) {
       const row = priorById.get(ortho.id);
       if (row) {
-        manifest.push(row);
+        // Only the tiler-derived numbers come from the prior manifest —
+        // id/site/visit always come from the CURRENT inventory, so a naming
+        // fix there (spelling canonicalization, site override) propagates to
+        // skipped orthos instead of being resurrected from a stale manifest.
+        manifest.push({
+          id: ortho.id,
+          site: ortho.site,
+          visit: ortho.visit,
+          width: row.width,
+          height: row.height,
+          max_level: row.max_level,
+        });
       } else {
         failures.push({
           id: ortho.id,
