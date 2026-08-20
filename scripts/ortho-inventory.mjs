@@ -27,6 +27,16 @@ const SUFFIX_RE = /_transparent_mosaic_group\d+\.tif$/i;
 // covering "-ortho", "ortho", "orthocopy", "orthoreal", etc.
 const SITE_VISIT_RE = /^(.+)([AB])-?ortho\w*$/;
 
+// Word-level spelling fixes applied before site/id derivation, so a typo in
+// one visit's filename ("ShabonnaLakeB") still lands in the same site (and
+// tile/id namespace) as its correctly-spelled sibling.
+const WORD_FIXES = { Shabonna: "Shabbona" };
+
+// Display-name overrides keyed by ortho id, applied AFTER id derivation so the
+// id (which tiles in R2 and hut rows already reference) never changes. Per
+// the field crew: "Hennepin Canal" (visit B) is the same site as "Hennepin".
+const SITE_OVERRIDES = { "hennepin-canal-b": "Hennepin" };
+
 // "Eldon_Hazlet" / "EldonHazlet" -> ["Eldon", "Hazlet"]; underscores and
 // CamelCase boundaries both count as word separators so visits that spell the
 // same site differently (e.g. "Double_T" vs "DoubleT") still resolve to one key.
@@ -57,10 +67,11 @@ function parseFile(filename, dirVisit) {
   if (letter !== dirVisit) {
     warning = `filename visit letter '${letter}' disagrees with directory visit '${dirVisit}'`;
   }
-  const words = splitWords(rawSite);
-  const site = words.join(" ");
+  const words = splitWords(rawSite).map((w) => WORD_FIXES[w] ?? w);
   const siteKey = slugify(words);
-  return { site, siteKey, id: `${siteKey}-${dirVisit.toLowerCase()}`, warning };
+  const id = `${siteKey}-${dirVisit.toLowerCase()}`;
+  const site = SITE_OVERRIDES[id] ?? words.join(" ");
+  return { site, siteKey, id, warning };
 }
 
 export function buildInventory() {
