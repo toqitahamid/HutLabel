@@ -23,7 +23,10 @@
 -- second run should fail loudly rather than silently accept columns of the
 -- wrong shape as if they were these.
 --
--- NOT YET APPLIED. The owner applies it.
+-- APPLIED to the Neon default branch 2026-09-17, with the owner's approval.
+-- The label table's fingerprint was identical before and after, and matched the
+-- offline backup. candidate_reviews held 0 rows at the time, so no verdict was
+-- touched either.
 
 begin;
 
