@@ -684,15 +684,22 @@
   margin: 0;
 }
 
-/* Hut list: the rail's last section, listing every hut on the active ortho
-   for click-to-jump navigation. Gets whatever vertical space the fixed
-   sections above it (zoom panel, attribute fields, delete button) don't need,
-   and scrolls WITHIN that space — flex: 1 1 auto + min-height: 0 is what lets
-   it shrink below its own content size instead of pushing those sections off
-   the bottom. */
+/* Hut list (and its review-mode twin, the candidate list): the rail's last
+   section, listing every hut on the active ortho for click-to-jump
+   navigation. Gets whatever vertical space the fixed sections above it (zoom
+   panel, attribute fields, delete button) don't need, and scrolls WITHIN that
+   space — flex: 1 1 auto is what lets it shrink below its own content size
+   instead of pushing those sections off the bottom.
+   The floor matters: it is the ONLY shrinkable child of `.right-rail`, so
+   without one it absorbs every pixel of overflow and collapses to nothing.
+   Review mode's fixed sections (magnifier square + verdict controls + the two
+   hint paragraphs) run ~760px, taller than the rail on a laptop-height
+   window, and a zero floor made the list vanish rather than let the rail
+   scroll. ~4 rows plus the label; past that the rail's own overflow-y takes
+   over. */
 .hut-list-section {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 150px;
   display: flex;
   flex-direction: column;
 }
