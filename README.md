@@ -16,14 +16,16 @@ src/
     OrthoMap.tsx        the map component (box-drag / point / pan modes)
     tile-geometry.ts    pure pyramid math, kept in lockstep with scripts/tiler.py
   huts/          hut domain model + attribute panel (pure model is unit-tested)
-  cloud/         Clerk auth gate, hut CRUD backend client
+  candidates/    machine-candidate model + review panel/list (see "Candidate review")
+  cloud/         Clerk auth gate, hut + candidate CRUD backend clients
   App.tsx        3-column shell: ortho list | map | attribute panel
-api/             Vercel functions (orthos, huts, admin-users) — Clerk + Neon on the server
+api/             Vercel functions (orthos, huts, candidates, admin-users) — Clerk + Neon on the server
 scripts/
   tiler.py            production tiler: GeoTIFF -> webp tile pyramid (runs locally or on Delta)
   ortho-inventory.mjs   parses data/Orthomosaics/**/*.tif filenames into {id, site, visit, path}
   tile-all.mjs          batch-runs tiler.py over all 41 orthos -> data/tiles/ + manifest.json
   seed-orthos.mjs        upserts a tiles manifest into the Neon orthos table
+  import-candidates.mjs  loads one pipeline batch into the candidates table
 data/            the 41 source orthomosaics + generated tiles (git-ignored; not committed)
 ```
 
@@ -57,6 +59,58 @@ Tiles are served one of two ways depending on `VITE_TILE_BASE` /
   file descriptors (EMFILE). Serving it directly keeps neither watcher aware of
   the directory.
 - a Cloudflare R2 public URL + `webp` — production.
+
+## Candidate review
+
+A research pipeline proposes boxes ("candidates"); a second annotator reviews
+them here and gives each one a verdict. Candidates live in their own tables and
+never touch `huts` or `/api/export`, so the hut ground truth is unaffected.
+
+The review is **blind**. In review mode the human hut boxes are hidden and hut
+editing is off, the pipeline's score is never sent to the browser, and each
+reviewer sees only their own verdict — which is what makes two independent
+passes an agreement measure rather than an echo.
+
+1. Apply `scripts/migrations/004-candidates.sql` (hand-run in the Neon console,
+   like 003). It creates `candidates` and `candidate_reviews`. Check the
+   `ortho_id` column type against the live `orthos` table first — the note at
+   the top of the file explains why.
+2. Load a batch:
+   ```
+   DATABASE_URL=... node scripts/import-candidates.mjs batch.json --dry-run
+   DATABASE_URL=... node scripts/import-candidates.mjs batch.json
+   ```
+   `--dry-run` validates every row (ortho exists, box fits inside it) and prints
+   per-ortho counts without inserting. Re-running a real import is a no-op:
+   `(batch, ortho_id, rank)` is unique. The file format is the fixed contract
+   with the research repo:
+   ```json
+   { "batch": "run-name",
+     "created_at": "2026-09-17T00:00:00Z",
+     "coordinate_system": "pixels at native resolution; origin top-left; box = [x, y, w, h]",
+     "candidates": [ { "ortho_id": "demo-site-a", "rank": 1,
+                       "x": 100, "y": 200, "w": 180, "h": 180, "score": 7.3 } ] }
+   ```
+3. A **Review candidates** button appears in the titlebar for any ortho that has
+   candidates, for every signed-in user. Keys in review mode:
+
+   | Key | Action |
+   | --- | --- |
+   | `Y` / `N` / `U` | hut / not hut / unsure |
+   | `⌫` | clear my verdict |
+   | `J` / `K` (or `]` / `[`) | next / previous candidate |
+   | `←` / `→` | previous / next ortho, as usual |
+
+   After a verdict the map flies to the next candidate you haven't judged, and
+   the rail counts "reviewed 7 / 10". Leaving review mode restores normal
+   labeling exactly.
+4. `GET /api/candidates-export` (admin) returns every candidate with every
+   reviewer's verdict, keyed by `(batch, ortho_id, rank)` for the pipeline to
+   join back on.
+
+For local dev without Clerk or Neon, drop a file in the same format at
+`public/tiles/candidates.dev.json`; the in-memory backend picks it up and keeps
+verdicts for the session.
 
 ## Tiling pipeline
 
