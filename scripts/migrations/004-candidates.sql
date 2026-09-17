@@ -20,7 +20,9 @@
 -- second run should fail loudly rather than silently accept a leftover table
 -- of the wrong shape as if it were this one.
 --
--- Not yet applied.
+-- Applied 2026-09-17 to the default branch, after a dry run on a throwaway
+-- Neon branch. Record only -- do not run again (it is deliberately not
+-- idempotent). The label table was verified byte-identical before and after.
 
 begin;
 
