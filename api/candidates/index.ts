@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   MAX_CANDIDATE_ROWS,
-  candidateInputProblems,
+  candidateBatchProblems,
   type CandidateInput,
 } from "../../src/candidates/model.js";
 import { requireAdmin, requireUser, sql } from "../_lib.js";
@@ -126,18 +126,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Validate EVERY row before inserting any: a half-applied batch would leave
     // the reviewer working through a queue with holes in it, and re-running the
-    // importer after a fix would then be ambiguous.
-    const invalid: { index: number; ortho_id: unknown; rank: unknown; problems: string[] }[] = [];
-    candidates.forEach((row, index) => {
-      const orthoId = (row as { ortho_id?: unknown }).ortho_id;
-      const problems = candidateInputProblems(
-        row,
-        typeof orthoId === "string" ? (dims.get(orthoId) ?? null) : null,
-      );
-      if (problems.length) {
-        invalid.push({ index, ortho_id: orthoId, rank: (row as { rank?: unknown }).rank, problems });
-      }
-    });
+    // importer after a fix would then be ambiguous. The rule itself is pure and
+    // unit-tested (src/candidates/model.ts), including the repeated
+    // (ortho_id, rank) that the insert's `on conflict` would otherwise swallow.
+    const invalid = candidateBatchProblems(candidates, dims);
     if (invalid.length) {
       res.status(400).json({
         error: `${invalid.length} of ${candidates.length} candidate rows are invalid; nothing was inserted`,

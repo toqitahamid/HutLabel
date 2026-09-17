@@ -79,6 +79,13 @@ export type CandidateInput = {
 // few hundred boxes at most; the importer splits larger files itself.
 export const MAX_CANDIDATE_ROWS = 2000;
 
+// `rank` is an int4 column (scripts/migrations/004-candidates.sql, `check (rank
+// >= 1)`). Bounding it here turns a pipeline that emits a nonsense rank into a
+// 400 naming the row, rather than a Postgres "integer out of range" surfacing
+// as a 500.
+export const MIN_RANK = 1;
+export const MAX_RANK = 2147483647;
+
 // Everything wrong with one proposed row, as a list rather than a bool, so the
 // caller can reject the WHOLE request naming each bad row instead of inserting
 // a partial batch. `dims` is the claimed ortho's size, or null when no such
@@ -98,7 +105,11 @@ export function candidateInputProblems(
   } else if (dims === null) {
     problems.push(`unknown ortho: ${ortho_id}`);
   }
-  if (!Number.isInteger(rank)) problems.push("rank must be an integer");
+  if (!Number.isInteger(rank)) {
+    problems.push("rank must be an integer");
+  } else if ((rank as number) < MIN_RANK || (rank as number) > MAX_RANK) {
+    problems.push(`rank must be between ${MIN_RANK} and ${MAX_RANK}`);
+  }
   // Same geometry rule the hut POST enforces, minus the point-label branch: a
   // candidate is always a box, and it must sit inside the ortho it claims.
   // Without dims there's nothing to check it against, and the unknown-ortho
@@ -117,6 +128,44 @@ export function candidateInputProblems(
     problems.push("score must be a finite number when present");
   }
   return problems;
+}
+
+// One bad row in a batch, as reported to the caller.
+export type CandidateRowProblem = {
+  index: number;
+  ortho_id: unknown;
+  rank: unknown;
+  problems: string[];
+};
+
+// Validate a whole POST body's rows. Pure, so the rule that decides whether a
+// batch lands is unit-tested rather than only exercised against a live
+// database. `dims` holds the size of every ortho that exists; a row naming
+// anything else is reported as unknown.
+//
+// Catching a repeated (ortho_id, rank) here matters: the insert's
+// `on conflict do nothing` would swallow the second row silently and count it
+// as "already present", so a pipeline bug that emitted a rank twice would look
+// like a successful import with a hole in the reviewer's queue.
+export function candidateBatchProblems(
+  rows: unknown[],
+  dims: Map<string, { width: number; height: number }>,
+): CandidateRowProblem[] {
+  const invalid: CandidateRowProblem[] = [];
+  const seen = new Set<string>();
+  rows.forEach((row, index) => {
+    const orthoId = (row as { ortho_id?: unknown } | null)?.ortho_id;
+    const problems = candidateInputProblems(
+      row,
+      typeof orthoId === "string" ? (dims.get(orthoId) ?? null) : null,
+    );
+    const rank = (row as { rank?: unknown } | null)?.rank;
+    const key = JSON.stringify([orthoId, rank]);
+    if (seen.has(key)) problems.push("duplicate (ortho_id, rank) within this batch");
+    seen.add(key);
+    if (problems.length) invalid.push({ index, ortho_id: orthoId, rank, problems });
+  });
+  return invalid;
 }
 
 // What a review key means for a candidate that currently carries `current`.
@@ -196,4 +245,26 @@ export function stepCandidateId(
 // Progress counter ("reviewed 7 / 10"): how many of these carry a verdict.
 export function reviewedCount(candidates: Candidate[]): number {
   return candidates.filter((c) => c.verdict !== null).length;
+}
+
+// Put ONE candidate's verdict back after its write failed, leaving every other
+// row alone. Deliberately not "restore the whole array from a snapshot taken
+// before the request": a reviewer decides faster than a round trip, so a
+// snapshot rollback would also undo whatever verdicts landed in the meantime —
+// and if the reviewer has since arrowed to another ortho, it would replace that
+// ortho's queue with the previous one's entirely.
+//
+// The ortho check is what makes it safe to call late: a list belonging to a
+// different ortho is returned untouched, as is one where the row is already
+// gone. Returns the same array reference when there is nothing to change, so
+// React can skip the re-render.
+export function restoreVerdict(
+  candidates: Candidate[],
+  orthoId: string,
+  candidateId: string,
+  verdict: Verdict | null,
+): Candidate[] {
+  const target = candidates.find((c) => c.id === candidateId);
+  if (!target || target.ortho_id !== orthoId || target.verdict === verdict) return candidates;
+  return candidates.map((c) => (c.id === candidateId ? { ...c, verdict } : c));
 }

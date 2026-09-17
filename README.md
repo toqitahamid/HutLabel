@@ -66,15 +66,23 @@ A research pipeline proposes boxes ("candidates"); a second annotator reviews
 them here and gives each one a verdict. Candidates live in their own tables and
 never touch `huts` or `/api/export`, so the hut ground truth is unaffected.
 
-The review is **blind**. In review mode the human hut boxes are hidden and hut
-editing is off, the pipeline's score is never sent to the browser, and each
-reviewer sees only their own verdict — which is what makes two independent
-passes an agreement measure rather than an echo.
+The review is **blind**. In review mode the human hut boxes are hidden (not even
+fetched), hut editing is off, the sidebar's hut counts are blanked, the
+pipeline's score is never sent to the browser, and each reviewer sees only their
+own verdict — which is what makes two independent passes an agreement measure
+rather than an echo.
 
-1. Apply `scripts/migrations/004-candidates.sql` (hand-run in the Neon console,
-   like 003). It creates `candidates` and `candidate_reviews`. Check the
-   `ortho_id` column type against the live `orthos` table first — the note at
-   the top of the file explains why.
+**Existing labels are never changed or removed by this feature.** No candidate
+code path writes to `huts` or `orthos`, migration 004 does not touch them, and
+every hut mutation (create, resize, confidence, delete, undo, redo) refuses
+while review mode is on. `src/no-hut-writes.test.ts` and `src/keymap.test.ts`
+enforce both halves. There is deliberately no "accept candidate as hut" action:
+promoting confirmed candidates into labels is a separate, owner-approved step.
+
+1. Apply `scripts/migrations/004-candidates.sql` — test it on a Neon branch
+   first, then apply to the default branch. It runs in one transaction, creates
+   `candidates` and `candidate_reviews`, and carries a commented-out rollback
+   block.
 2. Load a batch:
    ```
    DATABASE_URL=... node scripts/import-candidates.mjs batch.json --dry-run

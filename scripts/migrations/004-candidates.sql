@@ -1,52 +1,57 @@
 -- Candidate review: machine-proposed boxes from the research pipeline, plus one
--- blind verdict per reviewer per candidate. Two NEW tables — nothing here
--- touches `huts`, so the labeling UI and the hut export (api/export.ts) are
--- unaffected, and a candidate can never be mistaken for a human label.
+-- blind verdict per reviewer per candidate.
 --
--- Two assumptions, both forced by the base DDL not living in this repo:
---   * orthos.id is declared `text` here. scripts/seed-orthos.mjs inserts ids
---     like 'example-site-a', so text is the shape; if the base table used
---     varchar(n) or citext, change the column type below to match BEFORE
---     applying, or the foreign key will fail to create.
---   * gen_random_uuid() is assumed to be what huts.id already defaults to
---     (it is a Postgres 13+ builtin, no pgcrypto extension needed on Neon).
+-- Two NEW tables and nothing else. This migration does not ALTER, DROP or
+-- otherwise touch `huts` or `orthos` — existing labels are never changed or
+-- removed by this feature, and a candidate is a proposal, not a label. Turning
+-- confirmed candidates into huts would be a separate, owner-approved step; no
+-- code path in this feature does it.
 --
--- Run this AFTER 001-003 so a fresh replay lands in order.
+-- Column types and constraints mirror the live schema: ortho_id matches
+-- orthos.id (text) and cascades like huts.ortho_id does; the geometry checks
+-- match huts' x/y/w/h, except that w and h are NOT NULL here because a
+-- candidate is always a box (the pipeline has no point mode, so huts' paired
+-- `(w is null) = (h is null)` check has no counterpart).
+--
+-- Run this AFTER 001-003 so a fresh replay lands in order. One transaction, so
+-- a failure leaves nothing half-created.
 --
 -- Not yet applied.
 
-create table if not exists candidates (
+begin;
+
+create table candidates (
   id uuid primary key default gen_random_uuid(),
-  ortho_id text not null references orthos(id),
+  ortho_id text not null references orthos(id) on delete cascade,
   -- Provenance label for one pipeline run, e.g. 'dinov3-sat-2026-09-20'. The
   -- unit a reviewer works through, and what makes a re-import idempotent.
   batch text not null,
-  -- The pipeline's own ordering within (batch, ortho). Drives review order;
-  -- `score` is deliberately never shown to the reviewer (see api/candidates).
-  rank int not null,
-  -- Native-resolution pixels of that ortho, origin top-left, same coordinate
-  -- system as huts. A candidate is always a box (the pipeline has no point
-  -- mode), so unlike huts.w/h these are not null.
-  x int not null,
-  y int not null,
-  w int not null,
-  h int not null,
+  -- The pipeline's own ordering within (batch, ortho), 1-based. Drives review
+  -- order; `score` is deliberately never shown to the reviewer (see
+  -- api/candidates/index.ts).
+  rank int not null check (rank >= 1),
+  -- Native-resolution pixels of that ortho, origin top-left, the same
+  -- coordinate system huts use.
+  x int not null check (x >= 0),
+  y int not null check (y >= 0),
+  w int not null check (w > 0),
+  h int not null check (h > 0),
   score real,
   created_at timestamptz not null default now(),
   -- Makes re-running the importer for the same batch a no-op instead of a
-  -- duplicate (api/candidates POST relies on this for `on conflict`).
+  -- duplicate (api/candidates/index.ts relies on this for `on conflict`).
   unique (batch, ortho_id, rank)
 );
 
--- The read path is "this ortho's candidates in this batch, by rank"; the unique
--- index above leads with `batch`, so it cannot serve that query.
-create index if not exists candidates_ortho_batch_rank_idx
-  on candidates (ortho_id, batch, rank);
+-- The read path is "this ortho's candidates in this batch"; the unique index
+-- above leads with `batch`, so it cannot serve that query.
+create index candidates_ortho_batch_idx on candidates (ortho_id, batch);
 
-create table if not exists candidate_reviews (
+create table candidate_reviews (
   candidate_id uuid not null references candidates(id) on delete cascade,
   -- Clerk user id, taken from the verified JWT server-side — never from the
-  -- request body, same rule huts.labeler_id follows.
+  -- request body, the same rule huts.labeler_id follows, and the same kind of
+  -- value.
   reviewer_id text not null,
   verdict text not null check (verdict in ('hut', 'not_hut', 'unsure')),
   reviewed_at timestamptz not null default now(),
@@ -54,3 +59,13 @@ create table if not exists candidate_reviews (
   -- separate row, which is what makes an agreement measure possible.
   primary key (candidate_id, reviewer_id)
 );
+
+commit;
+
+-- Rollback, if this ever needs undoing. Drops only the two tables this
+-- migration created; `huts` and `orthos` are untouched either way.
+--
+-- begin;
+-- drop table candidate_reviews;
+-- drop table candidates;
+-- commit;

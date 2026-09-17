@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_RANK,
   VERDICTS,
+  candidateBatchProblems,
   candidateInputProblems,
   isValidVerdict,
   nextUnreviewedId,
+  restoreVerdict,
   reviewedCount,
   stepCandidateId,
   verdictChange,
@@ -78,6 +81,18 @@ describe("candidateInputProblems", () => {
     );
   });
 
+  it("bounds rank to the int4 range so Postgres never sees an overflow", () => {
+    // Out of range is the caller's error (400), not an "integer out of range"
+    // surfacing as a 500 halfway through the insert.
+    for (const rank of [0, -1, MAX_RANK + 1, Number.MAX_SAFE_INTEGER]) {
+      expect(candidateInputProblems({ ...good, rank }, dims)).toContain(
+        `rank must be between 1 and ${MAX_RANK}`,
+      );
+    }
+    expect(candidateInputProblems({ ...good, rank: 1 }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, rank: MAX_RANK }, dims)).toEqual([]);
+  });
+
   it("rejects geometry that is non-integer, degenerate, or off-image", () => {
     for (const bad of [
       { ...good, x: -1 },
@@ -107,6 +122,83 @@ describe("candidateInputProblems", () => {
   it("rejects a non-object row outright", () => {
     expect(candidateInputProblems(null, dims)).toEqual(["row must be an object"]);
     expect(candidateInputProblems("nope", dims)).toEqual(["row must be an object"]);
+  });
+});
+
+describe("candidateBatchProblems", () => {
+  const dims = new Map([
+    ["demo-site-a", { width: 8684, height: 31964 }],
+    ["demo-site-b", { width: 4096, height: 4096 }],
+  ]);
+  const row = { ortho_id: "demo-site-a", rank: 1, x: 100, y: 200, w: 180, h: 180, score: 7.3 };
+
+  it("passes a clean batch", () => {
+    expect(
+      candidateBatchProblems([row, { ...row, rank: 2 }, { ...row, ortho_id: "demo-site-b" }], dims),
+    ).toEqual([]);
+  });
+
+  it("names every bad row rather than stopping at the first", () => {
+    const invalid = candidateBatchProblems(
+      [row, { ...row, rank: 2, w: 0 }, { ...row, ortho_id: "nope", rank: 3 }],
+      dims,
+    );
+    expect(invalid.map((bad) => bad.index)).toEqual([1, 2]);
+  });
+
+  it("rejects a repeated (ortho_id, rank) inside one batch", () => {
+    // `on conflict do nothing` would swallow the second row and report it as
+    // "already present", leaving a hole in the reviewer's queue.
+    const invalid = candidateBatchProblems([row, { ...row, x: 900 }], dims);
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0].index).toBe(1);
+    expect(invalid[0].problems).toContain("duplicate (ortho_id, rank) within this batch");
+  });
+
+  it("allows the same rank on two different orthos", () => {
+    expect(candidateBatchProblems([row, { ...row, ortho_id: "demo-site-b" }], dims)).toEqual([]);
+  });
+
+  it("reports the offending ortho_id and rank so the caller can point at the row", () => {
+    const invalid = candidateBatchProblems([{ ...row, ortho_id: "nope", rank: 9 }], dims);
+    expect(invalid[0]).toMatchObject({ index: 0, ortho_id: "nope", rank: 9 });
+  });
+
+  it("survives junk rows without throwing", () => {
+    const invalid = candidateBatchProblems([null, "nope", 7, {}], dims);
+    expect(invalid).toHaveLength(4);
+  });
+});
+
+describe("restoreVerdict", () => {
+  const list = [
+    candidate("a", 1, "hut"),
+    candidate("b", 2, "not_hut"),
+    candidate("c", 3),
+  ];
+
+  it("puts one row's verdict back, leaving the others alone", () => {
+    const restored = restoreVerdict(list, "demo-site-a", "a", null);
+    expect(restored.map((c) => c.verdict)).toEqual([null, "not_hut", null]);
+  });
+
+  it("does not disturb a verdict landed while the failed request was in flight", () => {
+    // 'b' was decided after 'a''s write went out; rolling 'a' back must not
+    // take 'b' with it, which a whole-array snapshot restore would.
+    const later = list.map((c) => (c.id === "b" ? { ...c, verdict: "unsure" as Verdict } : c));
+    const restored = restoreVerdict(later, "demo-site-a", "a", null);
+    expect(restored.find((c) => c.id === "b")?.verdict).toBe("unsure");
+  });
+
+  it("leaves another ortho's queue completely untouched", () => {
+    const otherOrtho = list.map((c) => ({ ...c, ortho_id: "demo-site-b" }));
+    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", null)).toBe(otherOrtho);
+  });
+
+  it("is a no-op when the row is gone or already holds that verdict", () => {
+    expect(restoreVerdict(list, "demo-site-a", "missing", null)).toBe(list);
+    expect(restoreVerdict(list, "demo-site-a", "a", "hut")).toBe(list);
+    expect(restoreVerdict([], "demo-site-a", "a", null)).toEqual([]);
   });
 });
 

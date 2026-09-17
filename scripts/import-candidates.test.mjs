@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_CANDIDATE_ROWS,
+  MAX_RANK,
   candidateRowProblems,
   countByOrtho,
   validateCandidateFile,
@@ -60,6 +61,15 @@ describe("candidateRowProblems", () => {
         DIMS.get("demo-site-b"),
       ),
     ).toEqual([]);
+  });
+
+  it("bounds rank to the int4 range", () => {
+    for (const rank of [0, -1, MAX_RANK + 1]) {
+      expect(candidateRowProblems({ ...ROW, rank }, dims)).toContain(
+        `rank must be between 1 and ${MAX_RANK}`,
+      );
+    }
+    expect(candidateRowProblems({ ...ROW, rank: MAX_RANK }, dims)).toEqual([]);
   });
 
   it("flags a non-finite score", () => {

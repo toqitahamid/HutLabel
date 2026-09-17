@@ -30,6 +30,12 @@ import { neon } from "@neondatabase/serverless";
 // validateRow. Keep the two in step when either changes.
 export const MAX_CANDIDATE_ROWS = 2000;
 
+// `rank` is an int4 column with `check (rank >= 1)`. Bounding it here turns a
+// nonsense rank into a named bad row rather than a Postgres "integer out of
+// range" halfway through the insert.
+export const MIN_RANK = 1;
+export const MAX_RANK = 2147483647;
+
 // Everything wrong with one row, as a list. `dims` is the claimed ortho's size,
 // or null when that ortho is unknown (or when sizes aren't loaded yet, in the
 // file-shape pass below). An empty list means the row is good.
@@ -41,7 +47,11 @@ export function candidateRowProblems(row, dims) {
   } else if (dims === null) {
     problems.push(`unknown ortho: ${row.ortho_id}`);
   }
-  if (!Number.isInteger(row.rank)) problems.push("rank must be an integer");
+  if (!Number.isInteger(row.rank)) {
+    problems.push("rank must be an integer");
+  } else if (row.rank < MIN_RANK || row.rank > MAX_RANK) {
+    problems.push(`rank must be between ${MIN_RANK} and ${MAX_RANK}`);
+  }
   for (const field of ["x", "y", "w", "h"]) {
     if (!Number.isInteger(row[field])) problems.push(`${field} must be an integer`);
   }

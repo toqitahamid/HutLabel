@@ -503,10 +503,20 @@ export function OrthoMap({
   // Fly/pan to a hut-list row's hut (App's focusRequest signal). Depends only
   // on focusRequest — huts is read via hutsRef so an unrelated huts update
   // never re-triggers this, and re-clicking the same already-selected row
-  // (same hutId, bumped nonce) does. No first-mount guard needed: unlike
-  // resetSignal, focusRequest starts out null and only becomes non-null from
-  // an explicit row click.
+  // (same hutId, bumped nonce) does.
+  //
+  // The first-mount guard is the same one resetSignal uses, and it is load
+  // bearing: App keys this component on the ortho id, so arrowing to the next
+  // ortho REMOUNTS it while focusRequest still names a box from the ortho just
+  // left. Without the guard that stale request fires on mount and flies to the
+  // old box's pixel coordinates in the new image. App bumps the nonce again as
+  // soon as the new ortho's list loads, and that request is honoured normally.
+  const firstFocusRef = useRef(true);
   useEffect(() => {
+    if (firstFocusRef.current) {
+      firstFocusRef.current = false;
+      return;
+    }
     if (!focusRequest) return;
     const map = mapRef.current;
     if (!map) return;
