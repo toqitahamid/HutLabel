@@ -10,5 +10,5 @@
     "noEmit": true,
     "isolatedModules": true
   },
-  "include": ["**/*.ts", "../src/huts/model.ts"]
+  "include": ["**/*.ts", "../src/huts/model.ts", "../src/candidates/model.ts"]
 }

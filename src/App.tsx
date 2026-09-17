@@ -8,9 +8,22 @@ import {
   TEMP_HUT_PREFIX,
   isTempHutId,
 } from "./huts/model";
+import {
+  nextUnreviewedId,
+  restoreVerdict,
+  reviewedCount,
+  stepCandidateId,
+  verdictChange,
+  type Candidate,
+  type CandidateSummary,
+  type Verdict,
+} from "./candidates/model";
+import { resolveKey } from "./keymap";
 import { OrthoMap } from "./viewer/OrthoMap";
 import { AttributePanel } from "./huts/AttributePanel";
+import { CandidatePanel } from "./candidates/CandidatePanel";
 import { makeHutBackend } from "./cloud/hut-backend";
+import { makeCandidateBackend } from "./cloud/candidate-backend";
 import { useAccount } from "./cloud/AuthGate";
 import { AdminPanel } from "./cloud/AdminPanel";
 import {
@@ -102,6 +115,18 @@ const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
     rows: [
       ["Toggle", "Z"],
       ["Zoom level − / +", "[ / ]"],
+    ],
+  },
+  // Review mode (the "Review candidates" toggle) rebinds a handful of keys and
+  // parks the labeling ones; listed here so the one shortcut surface stays one
+  // surface. Note [ / ] mean prev/next candidate there, not magnifier zoom.
+  {
+    title: "Candidate review",
+    rows: [
+      ["Hut / not hut / unsure", "Y / N / U"],
+      ["Clear my verdict", "⌫"],
+      ["Previous / next candidate", "K / J"],
+      ["Same, alternate keys", "[ / ]"],
     ],
   },
   {
@@ -305,6 +330,7 @@ export default function App() {
   // Constructed once on mount; `account` is stable by then (App only renders
   // inside a signed-in AuthGate in cloud mode, pass-through in local dev).
   const backendRef = useRef(makeHutBackend(account?.getToken ?? null));
+  const candidateBackendRef = useRef(makeCandidateBackend(account?.getToken ?? null));
 
   const [orthos, setOrthos] = useState<Ortho[]>([]);
   const [activeOrtho, setActiveOrtho] = useState<Ortho | null>(null);
@@ -330,6 +356,29 @@ export default function App() {
   // Disables the Mark done/Reopen button for the duration of that PATCH.
   const [markingDone, setMarkingDone] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
+
+  // Candidate review. `reviewMode` is the blind-review switch: while it's on,
+  // the human huts are hidden, hut editing is off, and the right rail and the
+  // keyboard belong to the candidate queue. `candidateSummary` is loaded once
+  // and only decides which orthos offer the mode at all (and what the toggle's
+  // counter says), so a browsing labeler never pays for a per-ortho probe.
+  const [reviewMode, setReviewMode] = useState(false);
+  // Read by every hut-mutating handler below. A ref, not the state, because
+  // those handlers are async: a review that starts while a createHut is in
+  // flight must still be seen by the code that runs after the await, and a ref
+  // costs no dependency churn on six callbacks.
+  const reviewModeRef = useRef(false);
+  reviewModeRef.current = reviewMode;
+  // Which ortho is on screen RIGHT NOW, for the async verdict handler: its
+  // closure was made before the reviewer arrowed away, so it cannot ask
+  // `activeOrtho` whether its own ortho is still current.
+  const activeOrthoIdRef = useRef<string | null>(null);
+  activeOrthoIdRef.current = activeOrtho?.id ?? null;
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [candidateSummary, setCandidateSummary] = useState<Map<string, CandidateSummary>>(
+    new Map(),
+  );
   // Hut-list row-click signal for OrthoMap's fly-to effect. `nonce` (not just
   // hutId) so clicking the ALREADY-selected row still re-fires it — see
   // handleFocusHut below and OrthoMap's focusRequest prop.
@@ -358,13 +407,17 @@ export default function App() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
-  // Load huts whenever the active ortho changes.
+  // Load huts whenever the active ortho changes — but not during a blind
+  // review, where the human boxes are withheld: not fetching them keeps the
+  // geometry out of the browser entirely, rather than only off the screen.
+  // Leaving review mode re-runs this and brings them back.
   useEffect(() => {
     if (!activeOrtho) return;
     let cancelled = false;
     setHuts([]);
     setSelectedHutId(null);
     setHistory(EMPTY_HISTORY);
+    if (reviewMode) return;
     backendRef.current
       .listHuts(activeOrtho.id)
       .then((rows) => {
@@ -374,7 +427,18 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeOrtho]);
+  }, [activeOrtho, reviewMode]);
+
+  // Per-ortho candidate counts, loaded once. A failure here is deliberately NOT
+  // shown in the error banner: before migration 004 is applied this route 500s,
+  // and nothing else in the app depends on it — review mode simply never offers
+  // itself, and labeling carries on untouched.
+  useEffect(() => {
+    candidateBackendRef.current
+      .candidateSummary()
+      .then((rows) => setCandidateSummary(new Map(rows.map((r) => [r.ortho_id, r]))))
+      .catch((e) => console.warn("Candidate summary unavailable:", e));
+  }, []);
 
   const selectedHut = useMemo(
     () => huts.find((h) => h.id === selectedHutId) ?? null,
@@ -389,6 +453,128 @@ export default function App() {
     setSelectedHutId(id);
     setFocusRequest((prev) => ({ hutId: id, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
+
+  // Same signal for a candidate: OrthoMap's fly-to effect resolves the id
+  // against whichever list is on screen, so one mechanism serves both modes.
+  const handleFocusCandidate = useCallback((id: string) => {
+    setSelectedCandidateId(id);
+    setFocusRequest((prev) => ({ hutId: id, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+
+  // Load the active ortho's candidates on entering review mode, and again when
+  // the ortho changes while it's on (← / → nav keeps working there). Lands the
+  // reviewer on the first box they haven't judged yet.
+  useEffect(() => {
+    if (!reviewMode || !activeOrtho) return;
+    let cancelled = false;
+    setCandidates([]);
+    setSelectedCandidateId(null);
+    candidateBackendRef.current
+      .listCandidates(activeOrtho.id)
+      .then((rows) => {
+        if (cancelled) return;
+        setCandidates(rows);
+        // An ortho the pipeline proposed nothing for leaves the queue empty and
+        // the rail saying so. Review mode STAYS ON: dropping out of it here
+        // would re-run the huts effect and paint the human boxes over the map
+        // mid-review, which is the one thing a blind review must never do.
+        // Leaving review mode is always an explicit act — the toggle.
+        if (rows.length === 0) return;
+        handleFocusCandidate(nextUnreviewedId(rows, null) ?? rows[0].id);
+      })
+      .catch((e) => {
+        // Same reasoning as the empty case: surface the error, keep the mode.
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewMode, activeOrtho, handleFocusCandidate]);
+
+  const enterReviewMode = useCallback(() => {
+    // Nothing of the labeling session survives into a blind review: drop the
+    // hut selection so its box/handles are gone before the huts themselves are.
+    setSelectedHutId(null);
+    setReviewMode(true);
+  }, []);
+
+  const exitReviewMode = useCallback(() => {
+    setReviewMode(false);
+    setCandidates([]);
+    setSelectedCandidateId(null);
+  }, []);
+
+  // Keep the toggle's "reviewed / total" counter in step with the live list.
+  // Driven off `candidates` rather than folded in on the way out of review
+  // mode, because ← / → moves to another ortho WITHOUT leaving the mode: an
+  // exit-time fold missed every pass the reviewer navigated away from. Every
+  // path that changes a verdict — including a failed write's rollback — lands
+  // here for free.
+  useEffect(() => {
+    if (!reviewMode || candidates.length === 0) return;
+    const orthoId = candidates[0].ortho_id; // one ortho's queue at a time
+    const reviewed = reviewedCount(candidates);
+    setCandidateSummary((prev) => {
+      const row = prev.get(orthoId);
+      if (!row || row.reviewed_count === reviewed) return prev;
+      const next = new Map(prev);
+      next.set(orthoId, { ...row, reviewed_count: reviewed });
+      return next;
+    });
+  }, [candidates, reviewMode]);
+
+  // One path for every verdict gesture — the Y / N / U / ⌫ keys and the rail's
+  // buttons both land here. Optimistic-then-revert, the same rule the four hut
+  // handlers follow.
+  const handleVerdict = useCallback(
+    async (candidateId: string, pressed: Verdict | "clear") => {
+      const target = candidates.find((c) => c.id === candidateId);
+      if (!target) return;
+      const change = verdictChange(target.verdict, pressed);
+      if (change.kind === "none") return; // re-pressing the current verdict
+      const next = change.kind === "set" ? change.verdict : null;
+      const was = target.verdict;
+      const orthoId = target.ortho_id;
+      const updated = candidates.map((c) =>
+        c.id === candidateId ? { ...c, verdict: next } : c,
+      );
+      setCandidates(updated);
+      // Auto-advance on a verdict but NOT on a clear: deciding is what moves
+      // the queue along, whereas clearing is a correction the reviewer is
+      // presumably about to redo on the same box.
+      if (next !== null) {
+        const advanceTo = nextUnreviewedId(updated, candidateId);
+        if (advanceTo) handleFocusCandidate(advanceTo);
+      }
+      try {
+        if (next === null) await candidateBackendRef.current.clearVerdict(candidateId);
+        else await candidateBackendRef.current.setVerdict(candidateId, next);
+      } catch (e) {
+        // Put back THIS row only, and only if it still shows what this write
+        // put there. Restoring a whole pre-request snapshot would undo any
+        // verdict the reviewer landed while the request was in flight; passing
+        // `next` through additionally stops a failed write from clobbering a
+        // NEWER decision on the same candidate (see restoreVerdict).
+        setCandidates((cur) => restoreVerdict(cur, orthoId, candidateId, next, was));
+        // Point the reviewer at the box the banner is about, as long as that
+        // ortho's queue is still the one on screen — otherwise the message
+        // refers to something they can't see.
+        if (activeOrthoIdRef.current === orthoId) setSelectedCandidateId(candidateId);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [candidates, handleFocusCandidate],
+  );
+
+  // J / K and ] / [ — walk the queue by hand, without deciding anything.
+  const handleStepCandidate = useCallback(
+    (delta: number) => {
+      const next = stepCandidateId(candidates, selectedCandidateId, delta);
+      if (next && next !== selectedCandidateId) handleFocusCandidate(next);
+    },
+    [candidates, selectedCandidateId, handleFocusCandidate],
+  );
 
   // Orthos grouped by site, each site's visits sorted, for the explorer tree.
   // Sites are sorted alphabetically so the tree is stable across reloads.
@@ -447,8 +633,18 @@ export default function App() {
   // createHut resolves the temp row is swapped for the real one, carrying the
   // selection across the id change. On failure the temp row is removed so the
   // map never lies. w/h are null for a point hut, set for a box hut.
+  //
+  // The reviewModeRef guard on the first line is the convention every one of
+  // the six hut-mutating handlers follows (place, edit box, confidence,
+  // delete, undo, redo). Existing labels are never changed or removed by a
+  // reviewer, and no new one is created either — so each handler refuses in
+  // its own right rather than relying on being unreachable from a hidden UI.
+  // The map gesture and the keymap are the first two locks; this is the last,
+  // and the only one that still holds for an async continuation that resumes
+  // after review mode has begun. src/no-hut-writes.test.ts checks all six.
   const handlePlace = useCallback(
     async (x: number, y: number, w: number | null, h: number | null) => {
+      if (reviewModeRef.current) return;
       if (!activeOrtho) return;
       const tempId = `${TEMP_HUT_PREFIX}${crypto.randomUUID()}`;
       const tempHut: Hut = {
@@ -494,6 +690,7 @@ export default function App() {
   // optimistic-then-revert like handleDelete below.
   const handleEditBox = useCallback(
     async (id: string, x: number, y: number, w: number, h: number) => {
+      if (reviewModeRef.current) return; // see handlePlace
       // Same temp-id guard as handleDelete below.
       if (isTempHutId(id)) return;
       const target = huts.find((hut) => hut.id === id);
@@ -526,6 +723,7 @@ export default function App() {
   // redo-of-create) passes that snapshotted confidence into createHut and the
   // flag survives the round trip instead of resetting to the server default.
   const handleToggleConfidence = useCallback(async () => {
+    if (reviewModeRef.current) return; // see handlePlace
     // Same temp-id guard as handleEditBox above.
     if (!selectedHutId || isTempHutId(selectedHutId)) return;
     const target = huts.find((h) => h.id === selectedHutId);
@@ -547,6 +745,7 @@ export default function App() {
   }, [selectedHutId, huts]);
 
   const handleDelete = useCallback(async () => {
+    if (reviewModeRef.current) return; // see handlePlace
     // Same temp-id guard as handleEditBox above — also avoids racing the
     // in-flight createHut, which would otherwise leave an orphaned server row
     // once the swap in handlePlace finds no temp row left to replace.
@@ -576,6 +775,7 @@ export default function App() {
   // stack; on failure the entry is simply left off both (already popped by
   // `take*`), matching the drop-on-failure convention the four handlers use.
   const handleUndo = useCallback(async () => {
+    if (reviewModeRef.current) return; // see handlePlace — an undo is a hut write too
     const popped = takeUndo(history);
     if (!popped) return;
     const { entry, rest } = popped;
@@ -646,6 +846,7 @@ export default function App() {
   }, [history, huts]);
 
   const handleRedo = useCallback(async () => {
+    if (reviewModeRef.current) return; // see handlePlace — a redo is a hut write too
     const popped = takeRedo(history);
     if (!popped) return;
     const { entry, rest } = popped;
@@ -813,65 +1014,70 @@ export default function App() {
         return;
       }
       if (adminPanelOpen) return; // the panel owns the keyboard (incl. its own Esc)
-
-      // Undo/redo: Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, and Ctrl+Y (the common
-      // Windows/Linux redo binding). Checked ahead of the generic
-      // Cmd/Ctrl-passthrough below so this one combo is intercepted instead
-      // of falling through to the browser's own undo.
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) handleRedo();
-        else handleUndo();
-        return;
-      }
-      if (e.ctrlKey && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        handleRedo();
-        return;
-      }
-      if (e.metaKey || e.ctrlKey) return; // let other Cmd/Ctrl shortcuts pass through
-
-      // Esc: close the help modal first if it's open; otherwise deselect.
-      if (e.key === "Escape") {
-        if (helpOpen) setHelpOpen(false);
-        else setSelectedHutId(null);
+      if (helpOpen) {
+        // The help modal owns the keyboard while it's open, same as the
+        // welcome card above and the admin panel — otherwise Y / N / U land
+        // verdicts on a candidate the reviewer can't even see behind it.
+        if (e.key === "Escape") setHelpOpen(false);
         return;
       }
 
-      if (e.key === "?" || (e.shiftKey && e.key === "/")) {
-        e.preventDefault();
-        setHelpOpen(true);
-        return;
-      }
+      // Which action a key means lives in src/keymap.ts, as a pure function.
+      // That is what lets a test prove, over the whole keyboard, that review
+      // mode can never resolve to a hut mutation — the guarantee this switch
+      // would otherwise only assert by being read carefully.
+      const { action, preventDefault } = resolveKey(e, {
+        mode: reviewMode ? "review" : "label",
+        hutSelected: selectedHutId !== null,
+      });
+      if (preventDefault) e.preventDefault();
 
-      if (e.key === "c" || e.key === "C") {
-        if (!selectedHutId) return;
-        e.preventDefault();
-        handleToggleConfidence();
-        return;
-      }
-
-      if (e.key === "Delete" || e.key === "Backspace") {
-        if (!selectedHutId) return;
-        e.preventDefault();
-        handleDelete();
-        return;
-      }
-
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        if (!activeOrtho || orthos.length === 0) return;
-        const idx = orthos.findIndex((o) => o.id === activeOrtho.id);
-        if (idx === -1) return;
-        const nextIdx = e.key === "ArrowLeft" ? idx - 1 : idx + 1;
-        if (nextIdx < 0 || nextIdx >= orthos.length) return;
-        e.preventDefault();
-        setActiveOrtho(orthos[nextIdx]);
-        return;
-      }
-
-      if (e.key === "0") {
-        setResetNonce((n) => n + 1);
-        return;
+      switch (action.kind) {
+        case "none":
+          return;
+        case "undo":
+          handleUndo();
+          return;
+        case "redo":
+          handleRedo();
+          return;
+        case "escape":
+          // An open help modal already consumed Esc above, so this is purely
+          // "deselect whichever box the current mode has selected".
+          if (reviewMode) setSelectedCandidateId(null);
+          else setSelectedHutId(null);
+          return;
+        case "openHelp":
+          setHelpOpen(true);
+          return;
+        case "toggleConfidence":
+          handleToggleConfidence();
+          return;
+        case "deleteHut":
+          handleDelete();
+          return;
+        case "verdict":
+          if (selectedCandidateId) handleVerdict(selectedCandidateId, action.pressed);
+          return;
+        case "stepCandidate":
+          handleStepCandidate(action.delta);
+          return;
+        case "stepOrtho": {
+          // preventDefault is deliberately not in the keymap here: whether the
+          // step is possible at all depends on the ortho list, so it happens
+          // only once the bounds check has passed.
+          if (!activeOrtho || orthos.length === 0) return;
+          const idx = orthos.findIndex((o) => o.id === activeOrtho.id);
+          if (idx === -1) return;
+          const nextIdx = idx + action.delta;
+          if (nextIdx < 0 || nextIdx >= orthos.length) return;
+          e.preventDefault();
+          setActiveOrtho(orthos[nextIdx]);
+          return;
+        }
+        case "resetView":
+          setResetNonce((n) => n + 1);
+          return;
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -888,7 +1094,15 @@ export default function App() {
     handleToggleConfidence,
     handleUndo,
     handleRedo,
+    reviewMode,
+    selectedCandidateId,
+    handleVerdict,
+    handleStepCandidate,
   ]);
+
+  // Which orthos offer review mode, and what the toggle's counter shows.
+  const activeCandidateSummary =
+    activeOrtho ? (candidateSummary.get(activeOrtho.id) ?? null) : null;
 
   return (
     <div className="app">
@@ -907,7 +1121,7 @@ export default function App() {
             type="button"
             className="key-btn"
             onClick={handleUndo}
-            disabled={history.undoStack.length === 0}
+            disabled={reviewMode || history.undoStack.length === 0}
             title="Undo (⌘Z)"
             aria-label="Undo"
           >
@@ -918,7 +1132,7 @@ export default function App() {
             type="button"
             className="key-btn"
             onClick={handleRedo}
-            disabled={history.redoStack.length === 0}
+            disabled={reviewMode || history.redoStack.length === 0}
             title="Redo (⌘⇧Z)"
             aria-label="Redo"
           >
@@ -926,6 +1140,29 @@ export default function App() {
             <span>Redo</span>
           </button>
           <span className="title-divider" aria-hidden="true" />
+          {/* Only offered for an ortho the pipeline actually proposed boxes
+              for, so the control never appears on the 30-odd orthos that have
+              none — but ALWAYS while review mode is on, or arrowing onto an
+              empty ortho would hide the only way back out. */}
+          {(reviewMode || (activeCandidateSummary?.candidate_count ?? 0) > 0) && (
+            <button
+              type="button"
+              className="key-btn"
+              onClick={reviewMode ? exitReviewMode : enterReviewMode}
+              aria-pressed={reviewMode}
+              title={
+                reviewMode
+                  ? "Leave review mode and go back to labeling"
+                  : "Review the machine candidates on this ortho (hut labels are hidden)"
+              }
+            >
+              <span>
+                {reviewMode
+                  ? "Exit review"
+                  : `Review candidates (${activeCandidateSummary?.reviewed_count ?? 0}/${activeCandidateSummary?.candidate_count ?? 0})`}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             className="key-btn"
@@ -1029,6 +1266,19 @@ export default function App() {
                       const hutLabel = `${hutCount} hut${hutCount === 1 ? "" : "s"}`;
                       const statusLabel = doneStatusLabel(o.done_at, hutCount);
                       const isDone = o.done_at != null;
+                      // The hut counts are part of what a blind review
+                      // withholds — "0" or "Done — no huts found" next to an
+                      // ortho tells the reviewer the answer before they look.
+                      // The count, the derived status and the row title all go
+                      // blank while review mode is on. The done tick stays: an
+                      // admin set it, and it says nothing about how many huts.
+                      const countText = reviewMode ? "–" : `${hutCount}`;
+                      const rowTitle = reviewMode
+                        ? `${o.site} · Visit ${o.visit}`
+                        : `${o.site} · Visit ${o.visit} — ${hutLabel} · ${statusLabel}`;
+                      const countAria = reviewMode
+                        ? "Hut count hidden during review"
+                        : `${hutLabel} · ${statusLabel}`;
                       return (
                         <button
                           type="button"
@@ -1036,7 +1286,7 @@ export default function App() {
                           className={"image-item" + (isActive ? " active" : "")}
                           onClick={() => setActiveOrtho(o)}
                           aria-current={isActive ? "true" : undefined}
-                          title={`${o.site} · Visit ${o.visit} — ${hutLabel} · ${statusLabel}`}
+                          title={rowTitle}
                         >
                           <VisitIcon className="img-icon" />
                           <span className="image-item-name">Visit {o.visit}</span>
@@ -1045,11 +1295,12 @@ export default function App() {
                           )}
                           <span
                             className={
-                              "image-item-count mono" + (hutCount === 0 ? " zero" : "")
+                              "image-item-count mono" +
+                              (!reviewMode && hutCount === 0 ? " zero" : "")
                             }
-                            aria-label={`${hutLabel} · ${statusLabel}`}
+                            aria-label={countAria}
                           >
-                            {hutCount}
+                            {countText}
                           </span>
                         </button>
                       );
@@ -1086,6 +1337,10 @@ export default function App() {
             magnifierSlotEl={zoomSlotEl}
             resetSignal={resetNonce}
             focusRequest={focusRequest}
+            candidates={candidates}
+            reviewMode={reviewMode}
+            selectedCandidateId={selectedCandidateId}
+            onSelectCandidate={setSelectedCandidateId}
           />
         ) : (
           <div className="stage-empty">
@@ -1094,15 +1349,33 @@ export default function App() {
         )}
       </main>
 
-      <AttributePanel
-        hut={selectedHut}
-        huts={huts}
-        selectedHutId={selectedHutId}
-        onToggleConfidence={handleToggleConfidence}
-        onDelete={handleDelete}
-        onFocusHut={handleFocusHut}
-        zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
-      />
+      {/* One rail, two modes. Both panels render the same `zoomSlot` element at
+          the top, so the magnifier portal lands in the same place whichever is
+          mounted (OrthoMap rebuilds it when the slot node changes). */}
+      {reviewMode ? (
+        <CandidatePanel
+          candidates={candidates}
+          selectedCandidateId={selectedCandidateId}
+          onSetVerdict={(verdict) =>
+            selectedCandidateId && handleVerdict(selectedCandidateId, verdict)
+          }
+          onClearVerdict={() =>
+            selectedCandidateId && handleVerdict(selectedCandidateId, "clear")
+          }
+          onFocusCandidate={handleFocusCandidate}
+          zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
+        />
+      ) : (
+        <AttributePanel
+          hut={selectedHut}
+          huts={huts}
+          selectedHutId={selectedHutId}
+          onToggleConfidence={handleToggleConfidence}
+          onDelete={handleDelete}
+          onFocusHut={handleFocusHut}
+          zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
+        />
+      )}
 
       {helpOpen && (
         <KeyboardHelp onClose={() => setHelpOpen(false)} onShowWelcome={reopenWelcome} />

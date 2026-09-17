@@ -1,0 +1,361 @@
+import { describe, expect, it } from "vitest";
+import {
+  MAX_RANK,
+  MAX_SCORE,
+  VERDICTS,
+  candidateBatchProblems,
+  candidateInputProblems,
+  isValidVerdict,
+  nextUnreviewedId,
+  restoreVerdict,
+  reviewedCount,
+  stepCandidateId,
+  verdictChange,
+  verdictForKey,
+  verdictLabel,
+  type Candidate,
+  type Verdict,
+} from "./model";
+
+// Minimal candidate rows — only the fields the queue logic reads.
+function candidate(id: string, rank: number, verdict: Verdict | null = null): Candidate {
+  return {
+    id,
+    ortho_id: "demo-site-a",
+    batch: "demo-batch",
+    rank,
+    x: 100 * rank,
+    y: 200,
+    w: 180,
+    h: 180,
+    verdict,
+  };
+}
+
+describe("isValidVerdict", () => {
+  it("accepts the three known values", () => {
+    for (const v of VERDICTS) expect(isValidVerdict(v)).toBe(true);
+  });
+  it("rejects near-misses, other strings, and non-strings", () => {
+    expect(isValidVerdict("nothut")).toBe(false); // the underscore matters
+    expect(isValidVerdict("Hut")).toBe(false);
+    expect(isValidVerdict("certain")).toBe(false); // a hut confidence, not a verdict
+    expect(isValidVerdict("")).toBe(false);
+    expect(isValidVerdict(undefined)).toBe(false);
+    expect(isValidVerdict(null)).toBe(false);
+    expect(isValidVerdict(1)).toBe(false);
+  });
+});
+
+describe("verdictLabel", () => {
+  it("reads as prose, including the unreviewed case", () => {
+    expect(verdictLabel("hut")).toBe("hut");
+    expect(verdictLabel("not_hut")).toBe("not hut");
+    expect(verdictLabel("unsure")).toBe("unsure");
+    expect(verdictLabel(null)).toBe("unreviewed");
+  });
+});
+
+describe("candidateInputProblems", () => {
+  const dims = { width: 8684, height: 31964 };
+  const good = { ortho_id: "demo-site-a", rank: 1, x: 100, y: 200, w: 180, h: 180, score: 7.3 };
+
+  it("accepts a well-formed row, with or without a score", () => {
+    expect(candidateInputProblems(good, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: undefined }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: null }, dims)).toEqual([]);
+  });
+
+  it("rejects a row for an ortho that doesn't exist", () => {
+    const problems = candidateInputProblems(good, null);
+    expect(problems.some((p) => p.includes("unknown ortho"))).toBe(true);
+  });
+
+  it("rejects a missing or empty ortho_id", () => {
+    expect(candidateInputProblems({ ...good, ortho_id: "" }, dims).length).toBeGreaterThan(0);
+    expect(candidateInputProblems({ ...good, ortho_id: 7 }, dims).length).toBeGreaterThan(0);
+  });
+
+  it("rejects a non-integer rank", () => {
+    expect(candidateInputProblems({ ...good, rank: 1.5 }, dims)).toContain(
+      "rank must be an integer",
+    );
+  });
+
+  it("bounds rank to the int4 range so Postgres never sees an overflow", () => {
+    // Out of range is the caller's error (400), not an "integer out of range"
+    // surfacing as a 500 halfway through the insert.
+    for (const rank of [0, -1, MAX_RANK + 1, Number.MAX_SAFE_INTEGER]) {
+      expect(candidateInputProblems({ ...good, rank }, dims)).toContain(
+        `rank must be between 1 and ${MAX_RANK}`,
+      );
+    }
+    expect(candidateInputProblems({ ...good, rank: 1 }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, rank: MAX_RANK }, dims)).toEqual([]);
+  });
+
+  it("rejects geometry that is non-integer, degenerate, or off-image", () => {
+    for (const bad of [
+      { ...good, x: -1 },
+      { ...good, w: 0 },
+      { ...good, h: -5 },
+      { ...good, w: 180.5 },
+      { ...good, x: dims.width - 10, w: 20 }, // far edge crosses the boundary
+    ]) {
+      expect(candidateInputProblems(bad, dims).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("accepts a box whose far edge exactly touches the image boundary", () => {
+    expect(
+      candidateInputProblems({ ...good, x: dims.width - 180, y: dims.height - 180 }, dims),
+    ).toEqual([]);
+  });
+
+  it("rejects a non-finite score but not a missing one", () => {
+    expect(candidateInputProblems({ ...good, score: Number.NaN }, dims)).toContain(
+      "score must be a finite number when present",
+    );
+    expect(candidateInputProblems({ ...good, score: Number.POSITIVE_INFINITY }, dims).length)
+      .toBeGreaterThan(0);
+  });
+
+  it("bounds score to the float4 range the column can hold", () => {
+    // 1e40 is finite in JS but overflows a float4 — a 400, not a 500 from
+    // Postgres halfway through the insert.
+    for (const score of [1e40, -1e40, 1e308]) {
+      expect(candidateInputProblems({ ...good, score }, dims)).toContain(
+        `score must be within the float4 range (±${MAX_SCORE})`,
+      );
+    }
+    expect(candidateInputProblems({ ...good, score: MAX_SCORE }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: -MAX_SCORE }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: 0 }, dims)).toEqual([]);
+  });
+
+  it("rejects a non-object row outright", () => {
+    expect(candidateInputProblems(null, dims)).toEqual(["row must be an object"]);
+    expect(candidateInputProblems("nope", dims)).toEqual(["row must be an object"]);
+  });
+});
+
+describe("candidateBatchProblems", () => {
+  const dims = new Map([
+    ["demo-site-a", { width: 8684, height: 31964 }],
+    ["demo-site-b", { width: 4096, height: 4096 }],
+  ]);
+  const row = { ortho_id: "demo-site-a", rank: 1, x: 100, y: 200, w: 180, h: 180, score: 7.3 };
+
+  it("passes a clean batch", () => {
+    expect(
+      candidateBatchProblems([row, { ...row, rank: 2 }, { ...row, ortho_id: "demo-site-b" }], dims),
+    ).toEqual([]);
+  });
+
+  it("names every bad row rather than stopping at the first", () => {
+    const invalid = candidateBatchProblems(
+      [row, { ...row, rank: 2, w: 0 }, { ...row, ortho_id: "nope", rank: 3 }],
+      dims,
+    );
+    expect(invalid.map((bad) => bad.index)).toEqual([1, 2]);
+  });
+
+  it("rejects a repeated (ortho_id, rank) inside one batch", () => {
+    // `on conflict do nothing` would swallow the second row and report it as
+    // "already present", leaving a hole in the reviewer's queue.
+    const invalid = candidateBatchProblems([row, { ...row, x: 900 }], dims);
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0].index).toBe(1);
+    expect(invalid[0].problems).toContain("duplicate (ortho_id, rank) within this batch");
+  });
+
+  it("allows the same rank on two different orthos", () => {
+    expect(candidateBatchProblems([row, { ...row, ortho_id: "demo-site-b" }], dims)).toEqual([]);
+  });
+
+  it("reports the offending ortho_id and rank so the caller can point at the row", () => {
+    const invalid = candidateBatchProblems([{ ...row, ortho_id: "nope", rank: 9 }], dims);
+    expect(invalid[0]).toMatchObject({ index: 0, ortho_id: "nope", rank: 9 });
+  });
+
+  it("survives junk rows without throwing", () => {
+    const invalid = candidateBatchProblems([null, "nope", 7, {}], dims);
+    expect(invalid).toHaveLength(4);
+  });
+});
+
+describe("restoreVerdict", () => {
+  // Arguments are (candidates, orthoId, candidateId, optimistic, previous):
+  // `optimistic` is what the failed write put on screen, `previous` is what to
+  // put back.
+  const list = [
+    candidate("a", 1, "hut"),
+    candidate("b", 2, "not_hut"),
+    candidate("c", 3),
+  ];
+
+  it("puts one row's verdict back, leaving the others alone", () => {
+    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", null);
+    expect(restored.map((c) => c.verdict)).toEqual([null, "not_hut", null]);
+  });
+
+  it("does not disturb a verdict landed on ANOTHER candidate meanwhile", () => {
+    // 'b' was decided after 'a''s write went out; rolling 'a' back must not
+    // take 'b' with it, which a whole-array snapshot restore would.
+    const later = list.map((c) => (c.id === "b" ? { ...c, verdict: "unsure" as Verdict } : c));
+    const restored = restoreVerdict(later, "demo-site-a", "a", "hut", null);
+    expect(restored.find((c) => c.id === "b")?.verdict).toBe("unsure");
+  });
+
+  it("does not clobber a NEWER verdict on the SAME candidate", () => {
+    // Y on 'a' (PUT#1), then N on 'a' (PUT#2 succeeds), then PUT#1 rejects.
+    // Rolling back would show 'a' unreviewed while the database holds not_hut,
+    // and nothing would tell the reviewer the screen had gone stale.
+    const afterSecondDecision = list.map((c) =>
+      c.id === "a" ? { ...c, verdict: "not_hut" as Verdict } : c,
+    );
+    expect(restoreVerdict(afterSecondDecision, "demo-site-a", "a", "hut", null)).toBe(
+      afterSecondDecision,
+    );
+  });
+
+  it("still rolls back when the row holds exactly what the failed write put there", () => {
+    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", "unsure");
+    expect(restored.find((c) => c.id === "a")?.verdict).toBe("unsure");
+  });
+
+  it("leaves another ortho's queue completely untouched", () => {
+    const otherOrtho = list.map((c) => ({ ...c, ortho_id: "demo-site-b" }));
+    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", "hut", null)).toBe(otherOrtho);
+  });
+
+  it("is a no-op when the row is gone or already holds the previous value", () => {
+    expect(restoreVerdict(list, "demo-site-a", "missing", "hut", null)).toBe(list);
+    expect(restoreVerdict(list, "demo-site-a", "a", "hut", "hut")).toBe(list);
+    expect(restoreVerdict([], "demo-site-a", "a", "hut", null)).toEqual([]);
+  });
+
+  it("rolls a failed CLEAR back to the verdict it removed", () => {
+    const cleared = list.map((c) => (c.id === "a" ? { ...c, verdict: null } : c));
+    const restored = restoreVerdict(cleared, "demo-site-a", "a", null, "hut");
+    expect(restored.find((c) => c.id === "a")?.verdict).toBe("hut");
+  });
+});
+
+describe("verdictChange", () => {
+  it("sets a verdict on an unreviewed candidate", () => {
+    expect(verdictChange(null, "hut")).toEqual({ kind: "set", verdict: "hut" });
+  });
+  it("replaces a verdict with a different one", () => {
+    expect(verdictChange("hut", "not_hut")).toEqual({ kind: "set", verdict: "not_hut" });
+  });
+  it("treats re-pressing the current verdict as a no-op, not a toggle", () => {
+    expect(verdictChange("hut", "hut")).toEqual({ kind: "none" });
+    expect(verdictChange("unsure", "unsure")).toEqual({ kind: "none" });
+  });
+  it("clears only when there is something to clear", () => {
+    expect(verdictChange("not_hut", "clear")).toEqual({ kind: "clear" });
+    expect(verdictChange(null, "clear")).toEqual({ kind: "none" });
+  });
+});
+
+describe("verdictForKey", () => {
+  it("maps the review keys in both cases", () => {
+    expect(verdictForKey("y")).toBe("hut");
+    expect(verdictForKey("Y")).toBe("hut");
+    expect(verdictForKey("n")).toBe("not_hut");
+    expect(verdictForKey("N")).toBe("not_hut");
+    expect(verdictForKey("u")).toBe("unsure");
+    expect(verdictForKey("U")).toBe("unsure");
+    expect(verdictForKey("Backspace")).toBe("clear");
+  });
+  it("leaves every other key to the rest of the app", () => {
+    // These are App's / OrthoMap's own bindings and must pass through.
+    for (const key of ["ArrowLeft", "ArrowRight", "0", "Escape", "?", "j", "k", "[", "]", "z", "c"]) {
+      expect(verdictForKey(key)).toBeNull();
+    }
+  });
+});
+
+describe("nextUnreviewedId", () => {
+  it("starts at the first unreviewed candidate when nothing is selected", () => {
+    const list = [candidate("a", 1, "hut"), candidate("b", 2), candidate("c", 3)];
+    expect(nextUnreviewedId(list, null)).toBe("b");
+  });
+
+  it("advances past the candidate just decided", () => {
+    const list = [candidate("a", 1, "hut"), candidate("b", 2, "not_hut"), candidate("c", 3)];
+    expect(nextUnreviewedId(list, "b")).toBe("c");
+  });
+
+  it("skips candidates that already carry a verdict", () => {
+    const list = [
+      candidate("a", 1),
+      candidate("b", 2, "hut"),
+      candidate("c", 3, "unsure"),
+      candidate("d", 4),
+    ];
+    expect(nextUnreviewedId(list, "a")).toBe("d");
+  });
+
+  it("wraps to the top so a reviewer who jumped around still finishes", () => {
+    const list = [candidate("a", 1), candidate("b", 2, "hut"), candidate("c", 3, "hut")];
+    expect(nextUnreviewedId(list, "c")).toBe("a");
+  });
+
+  it("returns null when the queue is done, and for an empty list", () => {
+    const done = [candidate("a", 1, "hut"), candidate("b", 2, "not_hut")];
+    expect(nextUnreviewedId(done, "a")).toBeNull();
+    expect(nextUnreviewedId(done, null)).toBeNull();
+    expect(nextUnreviewedId([], null)).toBeNull();
+  });
+
+  it("never returns the candidate it started from when that one is reviewed", () => {
+    const list = [candidate("a", 1, "hut"), candidate("b", 2, "hut")];
+    expect(nextUnreviewedId(list, "a")).toBeNull();
+  });
+
+  it("does come back to the starting candidate if it is still unreviewed", () => {
+    // Clearing a verdict and pressing on should not strand the reviewer.
+    const list = [candidate("a", 1), candidate("b", 2, "hut")];
+    expect(nextUnreviewedId(list, "a")).toBe("a");
+  });
+});
+
+describe("stepCandidateId", () => {
+  const list = [candidate("a", 1), candidate("b", 2), candidate("c", 3)];
+
+  it("steps forward and back", () => {
+    expect(stepCandidateId(list, "a", 1)).toBe("b");
+    expect(stepCandidateId(list, "b", -1)).toBe("a");
+  });
+  it("clamps at both ends rather than wrapping", () => {
+    expect(stepCandidateId(list, "c", 1)).toBe("c");
+    expect(stepCandidateId(list, "a", -1)).toBe("a");
+  });
+  it("starts at the head when nothing (or nothing known) is selected", () => {
+    expect(stepCandidateId(list, null, 1)).toBe("a");
+    expect(stepCandidateId(list, "gone", -1)).toBe("a");
+  });
+  it("returns null for an empty list", () => {
+    expect(stepCandidateId([], null, 1)).toBeNull();
+  });
+  it("ignores verdicts — stepping walks the whole queue", () => {
+    const reviewed = [candidate("a", 1, "hut"), candidate("b", 2, "not_hut")];
+    expect(stepCandidateId(reviewed, "a", 1)).toBe("b");
+  });
+});
+
+describe("reviewedCount", () => {
+  it("counts every verdict, including unsure", () => {
+    expect(
+      reviewedCount([
+        candidate("a", 1, "hut"),
+        candidate("b", 2, "unsure"),
+        candidate("c", 3, "not_hut"),
+        candidate("d", 4),
+      ]),
+    ).toBe(3);
+    expect(reviewedCount([])).toBe(0);
+  });
+});
