@@ -198,6 +198,7 @@ describe("the app never writes to huts or orthos outside the pre-existing routes
       "api/export.ts",
       "scripts/import-candidates.mjs",
       "scripts/migrations/004-candidates.sql",
+      "scripts/migrations/005-candidate-box-adjust.sql",
     ]) {
       expect(SCANNED).toContain(file);
     }
@@ -296,6 +297,64 @@ describe("migration 004", () => {
     const raw = sourceOf(FILE);
     expect(raw).toContain("-- drop table candidate_reviews;");
     expect(raw).toContain("-- drop table candidates;");
+  });
+});
+
+// The generic sweep above already proves 005 writes nothing outside the tables
+// the feature owns. These are the 004-style checks that are specific to a
+// migration file, restated for the one that adds the reviewer's box correction:
+// it must touch exactly one table, and it must be the feature's own.
+describe("migration 005", () => {
+  const FILE = "scripts/migrations/005-candidate-box-adjust.sql";
+
+  it("alters exactly one table — the feature's own — and drops nothing", () => {
+    const text = commentFree(FILE);
+    expect(text).not.toContain("drop "); // the rollback block is commented out
+    expect(text).not.toContain("create "); // it adds columns, it creates nothing
+    expect(writeTargets(FILE).map((t) => t.identifier)).toEqual(["candidate_reviews"]);
+  });
+
+  it("does not name the label table at all, even in prose", () => {
+    // Checked against the RAW file, comments included, for the same reason 004
+    // is: the migration has no business referring to the label table, so there
+    // is nothing for a later edit to turn into a statement by accident.
+    expect(sourceOf(FILE).toLowerCase()).not.toContain("huts");
+  });
+
+  it("runs in one transaction and fails loudly on a re-run", () => {
+    const text = commentFree(FILE);
+    expect(text).toContain("begin;");
+    expect(text).toContain("commit;");
+    expect(text).not.toContain("if not exists");
+  });
+
+  it("carries the bounds checks the proposal columns use, and the all-or-none rule", () => {
+    const text = commentFree(FILE);
+    for (const check of [
+      "add column adj_x int check (adj_x >= 0)",
+      "add column adj_y int check (adj_y >= 0)",
+      "add column adj_w int check (adj_w > 0)",
+      "add column adj_h int check (adj_h > 0)",
+    ]) {
+      expect(text).toContain(check);
+    }
+    // A box is four numbers or it is nothing; without this a half-written
+    // correction would be storable and every reader would have to guess.
+    expect(text).toContain("add constraint candidate_reviews_adj_all_or_none check (");
+    expect(text).toContain(
+      "(adj_x is null and adj_y is null and adj_w is null and adj_h is null)",
+    );
+    expect(text).toContain(
+      "(adj_x is not null and adj_y is not null and adj_w is not null and adj_h is not null)",
+    );
+  });
+
+  it("ships a commented-out rollback that drops only what it added", () => {
+    const raw = sourceOf(FILE);
+    expect(raw).toContain("--   drop constraint candidate_reviews_adj_all_or_none,");
+    for (const col of ["adj_x", "adj_y", "adj_w", "adj_h"]) {
+      expect(raw).toContain(`--   drop column ${col}`);
+    }
   });
 });
 

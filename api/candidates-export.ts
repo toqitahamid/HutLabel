@@ -24,7 +24,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const [candidateRows, reviewRows] = await Promise.all([
     db`select id, batch, ortho_id, rank, x, y, w, h, score, created_at
        from candidates order by batch asc, ortho_id asc, rank asc`,
-    db`select candidate_id, reviewer_id, verdict, reviewed_at
+    db`select candidate_id, reviewer_id, verdict, reviewed_at,
+              adj_x, adj_y, adj_w, adj_h
        from candidate_reviews order by candidate_id asc, reviewer_id asc`,
   ]);
 
@@ -53,6 +54,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reviewer_id: r.reviewer_id,
       verdict: r.verdict,
       reviewed_at: r.reviewed_at,
+      // The reviewer's own correction of the box above, null when they accepted
+      // it as drawn (scripts/migrations/005-candidate-box-adjust.sql). All four
+      // are set together or not at all, so one null means uncorrected.
+      adj_box:
+        r.adj_x == null ? null : { x: r.adj_x, y: r.adj_y, w: r.adj_w, h: r.adj_h },
     })),
   }));
 

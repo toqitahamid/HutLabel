@@ -29,6 +29,11 @@ export function verdictLabel(verdict: Verdict | null): string {
   return "unreviewed";
 }
 
+// A rectangle in native pixels of an ortho, origin top-left — the one geometry
+// shape this module passes around (a candidate's proposal, a reviewer's
+// correction, a hut's box).
+export type Box = { x: number; y: number; w: number; h: number };
+
 // A candidate as the REVIEWER sees it. Geometry is native pixels of that ortho
 // (origin top-left), the same space huts use.
 //
@@ -40,6 +45,12 @@ export function verdictLabel(verdict: Verdict | null): string {
 //   - other reviewers' verdicts: the review is blind, so two passes give a
 //     real agreement measure instead of the second agreeing with the first.
 // `verdict` is THIS reviewer's own call, null until they make one.
+//
+// x/y/w/h are the box the PIPELINE proposed and never change — that is what a
+// run's precision has to be measured against. adj_* is THIS reviewer's own
+// correction of it (scripts/migrations/005-candidate-box-adjust.sql), null when
+// they have not moved it, and all four are null or all four are set. What to
+// DRAW is neither field on its own: use candidateBox().
 export type Candidate = {
   id: string;
   ortho_id: string;
@@ -50,7 +61,55 @@ export type Candidate = {
   w: number;
   h: number;
   verdict: Verdict | null;
+  adj_x: number | null;
+  adj_y: number | null;
+  adj_w: number | null;
+  adj_h: number | null;
 };
+
+// This reviewer's correction, or null when they have not moved the box. The
+// all-or-none check lives in the database too (migration 005); reading all four
+// here means a row that somehow half-set them is treated as uncorrected rather
+// than drawn at a nonsense position.
+export function adjustedBox(candidate: Candidate): Box | null {
+  const { adj_x, adj_y, adj_w, adj_h } = candidate;
+  if (adj_x == null || adj_y == null || adj_w == null || adj_h == null) return null;
+  return { x: adj_x, y: adj_y, w: adj_w, h: adj_h };
+}
+
+// The box to draw and to judge: the reviewer's correction when they made one,
+// the pipeline's proposal otherwise.
+export function candidateBox(candidate: Candidate): Box {
+  return (
+    adjustedBox(candidate) ?? {
+      x: candidate.x,
+      y: candidate.y,
+      w: candidate.w,
+      h: candidate.h,
+    }
+  );
+}
+
+// Same box, to the pixel? Used to tell a real drag from a nudge that landed
+// back where it started, and to spot a stale rollback.
+export function sameBox(a: Box | null, b: Box | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
+// Do two boxes share any AREA? Strictly positive overlap: boxes that merely
+// touch along an edge or meet at a corner do not overlap, since a candidate
+// abutting an existing label is not a duplicate of it. Fully contained counts.
+//
+// This is what decides whether an existing hut label is revealed to a reviewer
+// after they have voted on a candidate (see src/viewer/OrthoMap.tsx) — the
+// review itself stays blind, but a candidate that duplicates a box the PI's
+// team already drew becomes visible once the reviewer's own call is recorded.
+export function boxesOverlap(a: Box, b: Box): boolean {
+  return (
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+  );
+}
 
 // Per-ortho progress for the review-mode toggle and the counter: how many
 // candidates the latest batch holds, and how many of them this reviewer has
@@ -84,7 +143,8 @@ export const MAX_CANDIDATE_ROWS = 2000;
 // 400 naming the row, rather than a Postgres "integer out of range" surfacing
 // as a 500.
 export const MIN_RANK = 1;
-export const MAX_RANK = 2147483647;
+export const MAX_INT4 = 2147483647;
+export const MAX_RANK = MAX_INT4;
 
 // `score` is a float4 column, so anything past this overflows on insert
 // ("value out of range") — a 500 for what is really a malformed request.
@@ -136,6 +196,39 @@ export function candidateInputProblems(
     }
   }
   return problems;
+}
+
+// Everything wrong with a reviewer's corrected box, as a list, mirroring
+// candidateInputProblems above. `dims` is the size of the ortho the candidate
+// belongs to, or null when that lookup found nothing. An empty list means the
+// box is good.
+//
+// Same geometry rule the proposal itself had to satisfy — a correction is still
+// a box inside the same image — plus the int4 ceiling, so a client sending a
+// number past the column's range gets a 400 naming the problem rather than a
+// Postgres "integer out of range" surfacing as a 500. isValidBox already pins
+// x+w to the image width, so the ceiling only ever bites on nonsense input; it
+// is checked first for exactly that reason.
+export function adjustedBoxProblems(
+  box: unknown,
+  dims: { width: number; height: number } | null,
+): string[] {
+  if (typeof box !== "object" || box === null) return ["box must be an object"];
+  const { x, y, w, h } = box as Record<string, unknown>;
+  for (const [name, v] of [["x", x], ["y", y], ["w", w], ["h", h]] as const) {
+    if (!Number.isInteger(v)) return [`box.${name} must be an integer`];
+    if (Math.abs(v as number) > MAX_INT4) {
+      return [`box.${name} must be within the int4 range (±${MAX_INT4})`];
+    }
+  }
+  if (dims === null) return ["unknown ortho for this candidate"];
+  if (!isValidBox(x as number, y as number, w as number, h as number, dims.width, dims.height)) {
+    return [
+      `box must be positive integers inside the ${dims.width}x${dims.height} image, got ` +
+        `[${String(x)}, ${String(y)}, ${String(w)}, ${String(h)}]`,
+    ];
+  }
+  return [];
 }
 
 // One bad row in a batch, as reported to the caller.
@@ -255,36 +348,63 @@ export function reviewedCount(candidates: Candidate[]): number {
   return candidates.filter((c) => c.verdict !== null).length;
 }
 
-// Put ONE candidate's verdict back after its write failed, leaving every other
-// row alone. Deliberately not "restore the whole array from a snapshot taken
-// before the request": a reviewer decides faster than a round trip, so a
+// What one write put on a candidate row: the reviewer's verdict and their box
+// correction, which travel together because the database stores them in one row
+// (verdict is NOT NULL, so a correction cannot be written without one).
+export type ReviewState = { verdict: Verdict | null; box: Box | null };
+
+// Put ONE candidate's review state back after its write failed, leaving every
+// other row alone. Deliberately not "restore the whole array from a snapshot
+// taken before the request": a reviewer decides faster than a round trip, so a
 // snapshot rollback would also undo whatever verdicts landed in the meantime —
 // and if the reviewer has since arrowed to another ortho, it would replace that
 // ortho's queue with the previous one's entirely.
 //
-// `optimistic` is the value the failed write had put on screen, and it is what
+// `optimistic` is the state the failed write had put on screen, and it is what
 // makes this safe to call late. Three things can have happened by the time a
 // rejection arrives, and only the first should roll anything back:
 //   - the row still shows `optimistic`  -> that failed write is what is on
 //     screen, so put `previous` back;
 //   - the row shows something else      -> a LATER decision on the same
 //     candidate has already landed (Y then N, with the Y's PUT failing after
-//     the N's succeeded). Rolling back would reset the row to unreviewed while
-//     the database holds the newer verdict — the screen would be wrong and the
-//     reviewer would never know;
+//     the N's succeeded; or a second drag after the first one's PUT went out).
+//     Rolling back would reset the row while the database holds the newer
+//     state — the screen would be wrong and the reviewer would never know;
 //   - the row is gone, or belongs to another ortho -> nothing to do.
+// Both halves are compared, so a verdict write that failed cannot silently undo
+// a correction the reviewer dragged while it was in flight, and vice versa.
 // Returns the same array reference when there is nothing to change, so React
 // can skip the re-render.
 export function restoreVerdict(
   candidates: Candidate[],
   orthoId: string,
   candidateId: string,
-  optimistic: Verdict | null,
-  previous: Verdict | null,
+  optimistic: ReviewState,
+  previous: ReviewState,
 ): Candidate[] {
   const target = candidates.find((c) => c.id === candidateId);
   if (!target || target.ortho_id !== orthoId) return candidates;
-  if (target.verdict !== optimistic) return candidates; // a newer decision won
-  if (target.verdict === previous) return candidates;
-  return candidates.map((c) => (c.id === candidateId ? { ...c, verdict: previous } : c));
+  const onScreen: ReviewState = { verdict: target.verdict, box: adjustedBox(target) };
+  // A newer decision (or a newer drag) won — leave the screen alone.
+  if (onScreen.verdict !== optimistic.verdict) return candidates;
+  if (!sameBox(onScreen.box, optimistic.box)) return candidates;
+  if (onScreen.verdict === previous.verdict && sameBox(onScreen.box, previous.box)) {
+    return candidates;
+  }
+  return candidates.map((c) =>
+    c.id === candidateId ? { ...c, verdict: previous.verdict, ...boxColumns(previous.box) } : c,
+  );
+}
+
+// A Box (or its absence) as the four nullable columns a Candidate carries.
+export function boxColumns(box: Box | null): Pick<
+  Candidate,
+  "adj_x" | "adj_y" | "adj_w" | "adj_h"
+> {
+  return {
+    adj_x: box?.x ?? null,
+    adj_y: box?.y ?? null,
+    adj_w: box?.w ?? null,
+    adj_h: box?.h ?? null,
+  };
 }

@@ -9,11 +9,16 @@ import {
   isTempHutId,
 } from "./huts/model";
 import {
+  adjustedBox,
+  boxColumns,
+  candidateBox,
   nextUnreviewedId,
   restoreVerdict,
   reviewedCount,
+  sameBox,
   stepCandidateId,
   verdictChange,
+  type Box,
   type Candidate,
   type CandidateSummary,
   type Verdict,
@@ -407,17 +412,20 @@ export default function App() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
-  // Load huts whenever the active ortho changes — but not during a blind
-  // review, where the human boxes are withheld: not fetching them keeps the
-  // geometry out of the browser entirely, rather than only off the screen.
-  // Leaving review mode re-runs this and brings them back.
+  // Load huts whenever the active ortho changes, in review mode too. The blind
+  // review does NOT mean the browser never holds the labels: it means the map
+  // shows a reviewer nothing that could tell them the answer before they have
+  // given one. OrthoMap enforces that, revealing only the huts that overlap a
+  // candidate this reviewer has ALREADY voted on (see revealedHuts there), and
+  // the sidebar's per-ortho counts stay hidden throughout. What the reveal buys
+  // is the thing the PI asked for: knowing when a candidate duplicates a box the
+  // team already annotated, without seeing it beforehand.
   useEffect(() => {
     if (!activeOrtho) return;
     let cancelled = false;
     setHuts([]);
     setSelectedHutId(null);
     setHistory(EMPTY_HISTORY);
-    if (reviewMode) return;
     backendRef.current
       .listHuts(activeOrtho.id)
       .then((rows) => {
@@ -427,7 +435,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeOrtho, reviewMode]);
+    // Not keyed on reviewMode any more: the same huts serve both modes now, so
+    // toggling review would only throw away a list it is about to re-fetch.
+  }, [activeOrtho]);
 
   // Per-ortho candidate counts, loaded once. A failure here is deliberately NOT
   // shown in the error banner: before migration 004 is applied this route 500s,
@@ -536,6 +546,13 @@ export default function App() {
       const next = change.kind === "set" ? change.verdict : null;
       const was = target.verdict;
       const orthoId = target.ortho_id;
+      // The reviewer's pending box correction, if they dragged the box before
+      // deciding. It rides along with the verdict because the row that stores it
+      // has a NOT NULL verdict — there is no such thing as a stored correction
+      // without a decision (scripts/migrations/005-candidate-box-adjust.sql).
+      // The verdict itself never changes the box, so it is both the optimistic
+      // and the previous value for the rollback below.
+      const box = adjustedBox(target);
       const updated = candidates.map((c) =>
         c.id === candidateId ? { ...c, verdict: next } : c,
       );
@@ -549,14 +566,22 @@ export default function App() {
       }
       try {
         if (next === null) await candidateBackendRef.current.clearVerdict(candidateId);
-        else await candidateBackendRef.current.setVerdict(candidateId, next);
+        else await candidateBackendRef.current.setVerdict(candidateId, next, box ?? undefined);
       } catch (e) {
         // Put back THIS row only, and only if it still shows what this write
         // put there. Restoring a whole pre-request snapshot would undo any
         // verdict the reviewer landed while the request was in flight; passing
         // `next` through additionally stops a failed write from clobbering a
         // NEWER decision on the same candidate (see restoreVerdict).
-        setCandidates((cur) => restoreVerdict(cur, orthoId, candidateId, next, was));
+        setCandidates((cur) =>
+          restoreVerdict(
+            cur,
+            orthoId,
+            candidateId,
+            { verdict: next, box },
+            { verdict: was, box },
+          ),
+        );
         // Point the reviewer at the box the banner is about, as long as that
         // ortho's queue is still the one on screen — otherwise the message
         // refers to something they can't see.
@@ -565,6 +590,61 @@ export default function App() {
       }
     },
     [candidates, handleFocusCandidate],
+  );
+
+  // The reviewer's correction of a candidate's box (OrthoMap's corner and
+  // centre handles, review mode only). It does NOT touch the `candidates` table
+  // — that is the immutable record of what the model proposed, and a run's
+  // precision is only measurable against the boxes it actually emitted — and it
+  // obviously does not touch `huts`. It lands in the reviewer's own
+  // candidate_reviews row, next to their verdict.
+  //
+  // Which means the write is only possible once a verdict exists (that column is
+  // NOT NULL). So:
+  //   - already decided -> re-send the SAME verdict with the new box, now, so
+  //     the correction is not lost to a reload;
+  //   - not decided yet -> keep it in local state and let handleVerdict carry it
+  //     along with the decision that is presumably seconds away.
+  const handleAdjustBox = useCallback(
+    async (candidateId: string, x: number, y: number, w: number, h: number) => {
+      const target = candidates.find((c) => c.id === candidateId);
+      if (!target) return;
+      const next: Box = { x, y, w, h };
+      // A drag that ended where it started — including the degenerate nudge
+      // OrthoMap re-commits as the original geometry. Nothing to persist, but
+      // the array identity is bumped anyway so the redraw effect snaps the
+      // rectangle and its handles back from wherever the pointer left them.
+      if (sameBox(candidateBox(target), next)) {
+        setCandidates((cur) => cur.slice());
+        return;
+      }
+      const was = adjustedBox(target);
+      const verdict = target.verdict;
+      const orthoId = target.ortho_id;
+      setCandidates((cur) =>
+        cur.map((c) => (c.id === candidateId ? { ...c, ...boxColumns(next) } : c)),
+      );
+      if (verdict === null) return; // rides along with the next verdict
+      try {
+        await candidateBackendRef.current.setVerdict(candidateId, verdict, next);
+      } catch (e) {
+        // Same one-row, still-shows-what-this-write-put-there rule the verdict
+        // path uses: a later drag (or a later verdict) on the same candidate
+        // must not be undone by this rejection.
+        setCandidates((cur) =>
+          restoreVerdict(
+            cur,
+            orthoId,
+            candidateId,
+            { verdict, box: next },
+            { verdict, box: was },
+          ),
+        );
+        if (activeOrthoIdRef.current === orthoId) setSelectedCandidateId(candidateId);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [candidates],
   );
 
   // J / K and ] / [ — walk the queue by hand, without deciding anything.
@@ -1341,6 +1421,7 @@ export default function App() {
             reviewMode={reviewMode}
             selectedCandidateId={selectedCandidateId}
             onSelectCandidate={setSelectedCandidateId}
+            onAdjustCandidateBox={handleAdjustBox}
           />
         ) : (
           <div className="stage-empty">

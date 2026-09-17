@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import type { Ortho } from "../orthos";
 import { tileUrlTemplate } from "../orthos";
 import type { Confidence, Hut } from "../huts/model";
-import type { Candidate, Verdict } from "../candidates/model";
+import { boxesOverlap, candidateBox, type Box, type Candidate, type Verdict } from "../candidates/model";
 
 // Slippy-map viewer over a pre-baked tile pyramid (tiler.py) in Leaflet's
 // CRS.Simple pixel space. The single invariant that makes this correct:
@@ -65,40 +65,234 @@ function confidenceColor(confidence: Confidence): string {
 
 // Machine candidates (review mode) draw in a third hue, well clear of both hut
 // colors above and legible over open water and vegetation alike — so a
-// proposal can never be mistaken for a human label. Belt and braces: review
-// mode hides the human boxes entirely, since the review is blind.
+// proposal can never be mistaken for a human label.
 const CANDIDATE_COLOR = "#e845c8"; // magenta, machine candidate
 
-// The verdict rides in the stroke rather than a badge — a badge would be a
-// separate divIcon marker per candidate, and unreadable at the zoom a reviewer
-// actually works at. Unreviewed is a plain solid outline; "hut" fills in and
-// thickens; "not hut" goes hollow, dashed and dimmed; "unsure" is dotted.
+// Candidates are drawn as OUTLINES ONLY. A tinted fill over a 2 m box at review
+// zoom is exactly the thing the reviewer is trying to look at, and judging
+// whether a smudge of vegetation is a hut through a magenta wash is guesswork.
+// So the verdict rides entirely in the stroke — weight and dash — rather than in
+// fill opacity as it did before:
+//
+//   unreviewed  weight 2    solid
+//   hut         weight 3.5  solid          (the heaviest outline: a decision)
+//   not hut     weight 1.5  dashed, dimmed
+//   unsure      weight 2    dotted
+//
+// Selection is +1.5 on the weight and NOT a color change: the selected
+// candidate is the one with white corner handles on it, and turning its outline
+// white too would cost the one cue that says "this is a machine proposal".
 function candidateStyle(verdict: Verdict | null, selected: boolean): L.PathOptions {
   let weight = 2;
-  let fillOpacity = 0.12;
   let dashArray: string | undefined;
   let opacity = 1;
   if (verdict === "hut") {
-    weight = 3;
-    fillOpacity = 0.3;
+    weight = 3.5;
   } else if (verdict === "not_hut") {
     weight = 1.5;
-    fillOpacity = 0;
     dashArray = "4 4";
     opacity = 0.65;
   } else if (verdict === "unsure") {
     dashArray = "2 5";
   }
-  // Selection reads the same way it does for huts: a white stroke, one step
-  // heavier, leaving the verdict's own dash pattern and fill intact.
   return {
-    color: selected ? "#ffffff" : CANDIDATE_COLOR,
+    color: CANDIDATE_COLOR,
     weight: selected ? weight + 1.5 : weight,
     opacity,
-    fillColor: CANDIDATE_COLOR,
-    fillOpacity,
+    // fillOpacity 0 rather than `fill: false`: an unpainted fill still answers
+    // pointer events in SVG, so the whole box stays clickable to select it,
+    // where `fill: none` would leave only the 2 px stroke as a target.
+    fillOpacity: 0,
     dashArray,
   };
+}
+
+// An EXISTING hut label, revealed next to a candidate the reviewer has already
+// voted on (see the redraw effect). Deliberately unlike a candidate in every
+// channel: the hut confidence colors, no fill, thin, long-dashed, and inert —
+// there is nothing to click, because in review mode there is nothing a reviewer
+// may do to a human label.
+function revealedHutStyle(confidence: Confidence): L.PathOptions {
+  return {
+    color: confidenceColor(confidence),
+    weight: 1,
+    opacity: 0.9,
+    dashArray: "6 4",
+    fill: false,
+    interactive: false,
+  };
+}
+
+// Which existing huts a reviewer is allowed to see right now: those overlapping
+// a candidate they have already given a verdict on, and no others.
+//
+// The blindness is the point of the review — a second observer who can see the
+// first's boxes is not an independent one, and the capture-recapture estimate
+// of missed huts depends on that independence. Revealing a hut only AFTER the
+// verdict is recorded keeps it: the reviewer's call was made without it, and
+// what they gain afterwards is the knowledge that this candidate duplicates a
+// box the team already has.
+//
+// Point huts (w/h null) have no area to overlap and are never revealed, which
+// is also why the return type is narrowed to box huts.
+type BoxHut = Hut & { w: number; h: number };
+
+function revealedHuts(huts: Hut[], candidates: Candidate[]): BoxHut[] {
+  const decided = candidates.filter((c) => c.verdict !== null).map(candidateBox);
+  if (decided.length === 0) return [];
+  return huts.filter((hut): hut is BoxHut => {
+    if (hut.w == null || hut.h == null) return false;
+    const box: Box = { x: hut.x, y: hut.y, w: hut.w, h: hut.h };
+    return decided.some((candidate) => boxesOverlap(box, candidate));
+  });
+}
+
+type Corner = "NW" | "NE" | "SW" | "SE";
+
+const OPPOSITE_CORNER: Record<Corner, Corner> = {
+  NW: "SE",
+  NE: "SW",
+  SW: "NE",
+  SE: "NW",
+};
+
+// Four corner handles to resize a box plus a centre handle to move it, drawn
+// onto `layer` and dragging `rect` with them. Extracted from the selected-hut
+// code below so the selected CANDIDATE gets exactly the same gesture — same
+// divIcon, same "the opposite corner is pinned for this drag" rule, same
+// clamp-each-corner-then-derive commit, same minimum extent.
+//
+// The centre handle is the one thing huts never had: a candidate is usually the
+// right size in the wrong place (the pipeline's box centred on the wrong
+// clump), and dragging two opposite corners to translate it is four gestures
+// where one will do. It preserves w/h exactly and gives way at the image edge.
+//
+// `commit` is called once, on dragend, with the box in native pixels. A drag
+// that ends smaller than MIN_BOX_PX commits the ORIGINAL geometry instead —
+// re-submitting a no-op, which is how the caller is asked to snap the rectangle
+// back from an accidental nudge.
+function attachBoxHandles(opts: {
+  map: L.Map;
+  layer: L.LayerGroup;
+  rect: L.Rectangle;
+  box: Box;
+  maxLevel: number;
+  imageWidth: number;
+  imageHeight: number;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  commit: (x: number, y: number, w: number, h: number) => void;
+}): void {
+  const { map, layer, rect, box, maxLevel, imageWidth, imageHeight } = opts;
+
+  const cornerPx: Record<Corner, [number, number]> = {
+    NW: [box.x, box.y],
+    NE: [box.x + box.w, box.y],
+    SW: [box.x, box.y + box.h],
+    SE: [box.x + box.w, box.y + box.h],
+  };
+
+  // Moving the whole box: a wider, round handle at the centre, so it reads as
+  // "grab here" rather than as a fifth corner (see .box-handle-move in App.css).
+  const moveHandle = L.marker(
+    map.unproject([box.x + box.w / 2, box.y + box.h / 2], maxLevel),
+    {
+      draggable: true,
+      icon: L.divIcon({
+        className: "box-handle box-handle-move",
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      }),
+    },
+  );
+
+  const handles = {} as Record<Corner, L.Marker>;
+  const syncCorners = (bounds: L.LatLngBounds) => {
+    handles.NW.setLatLng(bounds.getNorthWest());
+    handles.NE.setLatLng(bounds.getNorthEast());
+    handles.SW.setLatLng(bounds.getSouthWest());
+    handles.SE.setLatLng(bounds.getSouthEast());
+  };
+
+  // The corner LatLng that stays put for the current resize gesture — computed
+  // at dragstart from the box's STORED geometry, not from the live handle.
+  let fixedCornerLatLng: L.LatLng | null = null;
+
+  (Object.keys(cornerPx) as Corner[]).forEach((corner) => {
+    const marker = L.marker(map.unproject(cornerPx[corner], maxLevel), {
+      draggable: true,
+      icon: L.divIcon({
+        className: "box-handle",
+        iconSize: [10, 10],
+        iconAnchor: [5, 5],
+      }),
+    });
+    handles[corner] = marker;
+
+    marker.on("dragstart", () => {
+      opts.onDragStart();
+      const [ox, oy] = cornerPx[OPPOSITE_CORNER[corner]];
+      fixedCornerLatLng = map.unproject([ox, oy], maxLevel);
+    });
+
+    // Live-update the rectangle and all handles from [the pinned corner, this
+    // handle's current position] — the simplest way to keep the visual a
+    // coherent rectangle without tracking each handle's motion individually.
+    marker.on("drag", () => {
+      if (!fixedCornerLatLng) return;
+      const bounds = L.latLngBounds(fixedCornerLatLng, marker.getLatLng());
+      rect.setBounds(bounds);
+      syncCorners(bounds);
+      moveHandle.setLatLng(bounds.getCenter());
+    });
+
+    marker.on("dragend", () => {
+      opts.onDragEnd(); // re-arm whatever the drag suppressed, first
+      if (!fixedCornerLatLng) return;
+      const p1 = map.project(fixedCornerLatLng, maxLevel);
+      const p2 = map.project(marker.getLatLng(), maxLevel);
+      fixedCornerLatLng = null;
+      // Clamp EACH corner into the image extent first, then derive x/y/w/h: a
+      // drag that ends offscreen must shrink the box, not drag the far corner
+      // after it.
+      const cx1 = Math.max(0, Math.min(p1.x, imageWidth));
+      const cy1 = Math.max(0, Math.min(p1.y, imageHeight));
+      const cx2 = Math.max(0, Math.min(p2.x, imageWidth));
+      const cy2 = Math.max(0, Math.min(p2.y, imageHeight));
+      const x = Math.round(Math.min(cx1, cx2));
+      const y = Math.round(Math.min(cy1, cy2));
+      const w = Math.round(Math.abs(cx2 - cx1));
+      const h = Math.round(Math.abs(cy2 - cy1));
+      if (w < MIN_BOX_PX || h < MIN_BOX_PX) opts.commit(box.x, box.y, box.w, box.h);
+      else opts.commit(x, y, w, h);
+    });
+
+    marker.addTo(layer);
+  });
+
+  moveHandle.on("dragstart", opts.onDragStart);
+
+  moveHandle.on("drag", () => {
+    const centre = map.project(moveHandle.getLatLng(), maxLevel);
+    const bounds = L.latLngBounds(
+      map.unproject([centre.x - box.w / 2, centre.y - box.h / 2], maxLevel),
+      map.unproject([centre.x + box.w / 2, centre.y + box.h / 2], maxLevel),
+    );
+    rect.setBounds(bounds);
+    syncCorners(bounds); // NOT moveHandle itself — Leaflet is dragging it
+  });
+
+  moveHandle.on("dragend", () => {
+    opts.onDragEnd();
+    const centre = map.project(moveHandle.getLatLng(), maxLevel);
+    // A move preserves the size exactly; it is the POSITION that gives way at
+    // the image edge, unlike a resize, where the far corner is pinned.
+    const x = Math.round(Math.max(0, Math.min(centre.x - box.w / 2, imageWidth - box.w)));
+    const y = Math.round(Math.max(0, Math.min(centre.y - box.h / 2, imageHeight - box.h)));
+    opts.commit(x, y, box.w, box.h);
+  });
+
+  moveHandle.addTo(layer);
 }
 
 // Global key handlers (Space-to-pan, Z-toggle) must ignore keystrokes meant
@@ -141,14 +335,19 @@ export type OrthoMapProps = {
   // from two different tables, so they can never collide).
   focusRequest?: { hutId: string; nonce: number } | null;
   // Candidate review: the machine proposals for this ortho, and the blind-review
-  // switch. While `reviewMode` is on, human huts are not drawn at all and the
-  // box-drawing gesture is inert — the reviewer judges candidates and nothing
-  // else. Off, every one of these is ignored and the map behaves exactly as it
-  // did before the feature existed.
+  // switch. While `reviewMode` is on, the box-drawing gesture is inert and the
+  // only human huts drawn are the ones already-voted-on candidates overlap (see
+  // revealedHuts) — the reviewer judges candidates and nothing else. Off, every
+  // one of these is ignored and the map behaves exactly as it did before the
+  // feature existed.
   candidates?: Candidate[];
   reviewMode?: boolean;
   selectedCandidateId?: string | null;
   onSelectCandidate?: (id: string) => void;
+  // Commits the reviewer's correction of the SELECTED candidate's box (native
+  // px), fired once on handle dragend — the candidate twin of onEditBox. Absent
+  // = the candidate boxes are read-only and no handles are drawn.
+  onAdjustCandidateBox?: (id: string, x: number, y: number, w: number, h: number) => void;
 };
 
 export function OrthoMap({
@@ -165,6 +364,7 @@ export function OrthoMap({
   reviewMode = false,
   selectedCandidateId = null,
   onSelectCandidate,
+  onAdjustCandidateBox,
 }: OrthoMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -197,6 +397,8 @@ export function OrthoMap({
   onPlaceRef.current = onPlace;
   const onEditBoxRef = useRef(onEditBox);
   onEditBoxRef.current = onEditBox;
+  const onAdjustCandidateBoxRef = useRef(onAdjustCandidateBox);
+  onAdjustCandidateBoxRef.current = onAdjustCandidateBox;
 
   // Box-drag scratch state — a live preview rectangle (mirrored on the
   // magnifier map so the draw is visible there too) plus the press-down
@@ -522,10 +724,18 @@ export function OrthoMap({
     if (!map) return;
     // Huts first, then candidates: the id names whichever list is on screen
     // (see the focusRequest prop comment). Both carry the same native-pixel
-    // geometry, so one piece of fly-to math serves both.
-    const target =
-      hutsRef.current.find((h) => h.id === focusRequest.hutId) ??
-      candidatesRef.current.find((c) => c.id === focusRequest.hutId);
+    // geometry, so one piece of fly-to math serves both — a candidate resolves
+    // through candidateBox, so flying to a corrected box lands on where it now
+    // IS rather than on where the pipeline first put it.
+    const hut = hutsRef.current.find((h) => h.id === focusRequest.hutId);
+    const candidate = hut
+      ? undefined
+      : candidatesRef.current.find((c) => c.id === focusRequest.hutId);
+    const target = hut
+      ? { x: hut.x, y: hut.y, w: hut.w, h: hut.h }
+      : candidate
+        ? candidateBox(candidate)
+        : null;
     if (!target) return;
     const { max_level } = ortho;
     // Same box-vs-point unproject math the marker-draw effect below uses: a
@@ -561,12 +771,23 @@ export function OrthoMap({
     if (!mag || !layer) return; // magnifier not built yet (or torn down)
     layer.clearLayers();
     if (reviewModeRef.current) {
-      for (const candidate of candidatesRef.current) {
-        const topLeft = mag.unproject([candidate.x, candidate.y], ortho.max_level);
+      // Same two passes as the main map, in the same order: revealed labels
+      // underneath, candidates on top. No handles here — the magnifier is a
+      // viewport, and editing happens on the map.
+      for (const hut of revealedHuts(hutsRef.current, candidatesRef.current)) {
+        const topLeft = mag.unproject([hut.x, hut.y], ortho.max_level);
         const bottomRight = mag.unproject(
-          [candidate.x + candidate.w, candidate.y + candidate.h],
+          [hut.x + hut.w, hut.y + hut.h],
           ortho.max_level,
         );
+        L.rectangle(L.latLngBounds(topLeft, bottomRight), revealedHutStyle(hut.confidence)).addTo(
+          layer,
+        );
+      }
+      for (const candidate of candidatesRef.current) {
+        const box = candidateBox(candidate);
+        const topLeft = mag.unproject([box.x, box.y], ortho.max_level);
+        const bottomRight = mag.unproject([box.x + box.w, box.y + box.h], ortho.max_level);
         L.rectangle(L.latLngBounds(topLeft, bottomRight), {
           ...candidateStyle(candidate.verdict, candidate.id === selectedCandidateIdRef.current),
           interactive: false, // viewport only — no click/select here
@@ -741,26 +962,67 @@ export function OrthoMap({
     if (!map || !layer) return;
     layer.clearLayers();
 
-    // Review mode draws ONLY the candidates. Human huts are withheld
-    // deliberately — a reviewer who can see where the labeler drew a box is no
-    // longer giving an independent opinion — and with no hut on screen there is
-    // nothing to select, resize or delete either.
+    // Review mode draws the candidates, plus the few human huts that overlap a
+    // candidate this reviewer has ALREADY voted on. Every other hut is withheld:
+    // a reviewer who can see where the labeler drew a box is no longer giving an
+    // independent opinion. Revealed huts are inert (revealedHutStyle sets
+    // interactive: false), so there is still nothing here to select, resize or
+    // delete — the only thing a reviewer may move is a candidate's own box.
     if (reviewMode) {
-      for (const candidate of candidates) {
-        const topLeft = map.unproject([candidate.x, candidate.y], ortho.max_level);
+      for (const hut of revealedHuts(huts, candidates)) {
+        const topLeft = map.unproject([hut.x, hut.y], ortho.max_level);
         const bottomRight = map.unproject(
-          [candidate.x + candidate.w, candidate.y + candidate.h],
+          [hut.x + hut.w, hut.y + hut.h],
           ortho.max_level,
         );
+        L.rectangle(L.latLngBounds(topLeft, bottomRight), revealedHutStyle(hut.confidence)).addTo(
+          layer,
+        );
+      }
+      for (const candidate of candidates) {
+        const selected = candidate.id === selectedCandidateId;
+        const box = candidateBox(candidate);
+        const topLeft = map.unproject([box.x, box.y], ortho.max_level);
+        const bottomRight = map.unproject([box.x + box.w, box.y + box.h], ortho.max_level);
         const rect = L.rectangle(
           L.latLngBounds(topLeft, bottomRight),
-          candidateStyle(candidate.verdict, candidate.id === selectedCandidateId),
+          candidateStyle(candidate.verdict, selected),
         );
         rect.on("click", (e) => {
           L.DomEvent.stopPropagation(e);
           onSelectCandidate?.(candidate.id);
         });
         rect.addTo(layer);
+
+        // The SELECTED candidate gets the same corner handles a selected hut
+        // gets, plus a centre handle to move it — the reviewer's correction of
+        // a box that is right about the hut and wrong about its extent. Drawn
+        // for one candidate only, and torn down with everything else on the
+        // next layer.clearLayers(). The map's own draw gesture stays disabled
+        // throughout: this is handle-driven, never a drag on open ground.
+        if (selected && onAdjustCandidateBoxRef.current) {
+          attachBoxHandles({
+            map,
+            layer,
+            rect,
+            box,
+            maxLevel: ortho.max_level,
+            imageWidth: ortho.width,
+            imageHeight: ortho.height,
+            onDragStart: () => {
+              // Belt and braces, exactly as for huts: review mode already
+              // refuses to arm a box draw, but a stray mousedown that preceded
+              // this dragstart is cleared here too.
+              boxStartRef.current = null;
+              clearPreviewRef.current();
+              editingHandleRef.current = true;
+            },
+            onDragEnd: () => {
+              editingHandleRef.current = false;
+            },
+            commit: (x, y, w, h) => onAdjustCandidateBoxRef.current?.(candidate.id, x, y, w, h),
+          });
+        }
       }
       drawMagnifierBoxes();
       return;

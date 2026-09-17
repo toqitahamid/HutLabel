@@ -4,7 +4,7 @@ import {
   SerializedCandidateBackend,
   type CandidateBackend,
 } from "./candidate-backend";
-import type { Candidate, CandidateSummary, Verdict } from "../candidates/model";
+import { adjustedBox, type Box, type Candidate, type CandidateSummary, type Verdict } from "../candidates/model";
 
 // The offline backend is the one implementation that can be exercised without
 // Clerk and Neon, so it carries the tests for the whole interface's contract:
@@ -124,6 +124,51 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     ]);
   });
 
+  it("stores the reviewer's corrected box alongside their verdict", async () => {
+    stubDevFile(DEV_FILE);
+    const backend = new LocalDevCandidateBackend();
+    const [first] = await backend.listCandidates("demo-site-a");
+    expect(adjustedBox(first)).toBeNull(); // the proposal, uncorrected
+
+    const moved: Box = { x: 120, y: 240, w: 150, h: 150 };
+    await backend.setVerdict(first.id, "hut", moved);
+    const [corrected] = await backend.listCandidates("demo-site-a");
+    expect(adjustedBox(corrected)).toEqual(moved);
+    // The proposal itself is untouched — it is what the run's precision is
+    // measured against.
+    expect({ x: corrected.x, y: corrected.y, w: corrected.w, h: corrected.h }).toEqual({
+      x: 100,
+      y: 200,
+      w: 180,
+      h: 180,
+    });
+  });
+
+  it("keeps a correction when a later verdict arrives without one", async () => {
+    stubDevFile(DEV_FILE);
+    const backend = new LocalDevCandidateBackend();
+    const [first] = await backend.listCandidates("demo-site-a");
+    const moved: Box = { x: 120, y: 240, w: 150, h: 150 };
+
+    await backend.setVerdict(first.id, "hut", moved);
+    await backend.setVerdict(first.id, "unsure"); // changed their mind, same box
+    const [after] = await backend.listCandidates("demo-site-a");
+    expect(after.verdict).toBe("unsure");
+    expect(adjustedBox(after)).toEqual(moved);
+  });
+
+  it("drops the correction when the verdict is cleared — they are one row", async () => {
+    stubDevFile(DEV_FILE);
+    const backend = new LocalDevCandidateBackend();
+    const [first] = await backend.listCandidates("demo-site-a");
+    await backend.setVerdict(first.id, "hut", { x: 120, y: 240, w: 150, h: 150 });
+
+    await backend.clearVerdict(first.id);
+    const [cleared] = await backend.listCandidates("demo-site-a");
+    expect(cleared.verdict).toBeNull();
+    expect(adjustedBox(cleared)).toBeNull();
+  });
+
   it("gives candidates on different orthos distinct ids", async () => {
     stubDevFile(DEV_FILE);
     const backend = new LocalDevCandidateBackend();
@@ -148,8 +193,12 @@ class DeferredBackend implements CandidateBackend {
   async candidateSummary(): Promise<CandidateSummary[]> {
     return [];
   }
-  setVerdict(id: string, verdict: Verdict): Promise<void> {
-    return this.defer(`set:${id}:${verdict}`);
+  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
+    // The box only enters the label when there is one, so the ordering
+    // assertions below read the same as before this feature existed.
+    return this.defer(
+      box ? `set:${id}:${verdict}:${box.x},${box.y},${box.w},${box.h}` : `set:${id}:${verdict}`,
+    );
   }
   clearVerdict(id: string): Promise<void> {
     return this.defer(`clear:${id}`);
@@ -255,6 +304,25 @@ describe("SerializedCandidateBackend", () => {
     expect(inner.started).toEqual(["set:a:hut", "set:a:not_hut"]);
     inner.settle("set:a:not_hut");
     await expect(second).resolves.toBeUndefined();
+  });
+
+  it("carries the corrected box through to the wrapped backend, in order", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    const first = backend.setVerdict("a", "hut", { x: 10, y: 20, w: 30, h: 40 });
+    const second = backend.setVerdict("a", "hut", { x: 11, y: 21, w: 30, h: 40 });
+    await tick();
+    // Two drags inside one round trip: the LATER box must be the one that
+    // reaches the server last, for exactly the reason a later verdict must.
+    expect(inner.started).toEqual(["set:a:hut:10,20,30,40"]);
+
+    inner.settle("set:a:hut:10,20,30,40");
+    await first;
+    await tick();
+    inner.settle("set:a:hut:11,21,30,40");
+    await second;
+    expect(inner.finished).toEqual(["set:a:hut:10,20,30,40", "set:a:hut:11,21,30,40"]);
   });
 
   it("passes reads straight through", async () => {

@@ -368,6 +368,18 @@
   cursor: nwse-resize;
 }
 
+/* The centre handle that MOVES a box rather than resizing it (candidate review
+   — see attachBoxHandles in OrthoMap). Round and a little larger than the
+   corner squares, with the move cursor, so the two gestures are told apart
+   before the pointer is pressed rather than after. */
+.box-handle-move {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  cursor: move;
+}
+
 /* Magnifier: a second Leaflet map, portaled from OrthoMap into the top of
    the right rail — same position and non-floating look as FlagLabel's own
    zoom panel (a plain block at the top of `.right-rail`, not an overlay). */

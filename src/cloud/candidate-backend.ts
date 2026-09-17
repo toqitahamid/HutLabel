@@ -1,4 +1,4 @@
-import type { Candidate, CandidateSummary, Verdict } from "../candidates/model";
+import { boxColumns, type Box, type Candidate, type CandidateSummary, type Verdict } from "../candidates/model";
 import { isCloudConfigured } from "./config";
 
 // The candidate-review persistence seam, shaped exactly like HutBackend next
@@ -16,7 +16,11 @@ export interface CandidateBackend {
   // Per-ortho counts for the review-mode toggle and progress display. One call
   // covering every ortho, so the app doesn't probe each one it shows.
   candidateSummary(): Promise<CandidateSummary[]>;
-  setVerdict(id: string, verdict: Verdict): Promise<void>;
+  // `box` is the reviewer's own correction of the proposed geometry, sent WITH
+  // the verdict because the row holding it has a NOT NULL verdict — there is no
+  // such thing as a stored correction without a decision. Omitted = leave any
+  // correction already on the row alone.
+  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void>;
   clearVerdict(id: string): Promise<void>;
 }
 
@@ -63,10 +67,10 @@ export class ApiCandidateBackend implements CandidateBackend {
     return this.call<CandidateSummary[]>("/api/candidates?summary=1");
   }
 
-  async setVerdict(id: string, verdict: Verdict): Promise<void> {
+  async setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
     await this.call<{ candidate_id: string }>(
       `/api/candidates/${encodeURIComponent(id)}/review`,
-      { method: "PUT", body: JSON.stringify({ verdict }) },
+      { method: "PUT", body: JSON.stringify(box ? { verdict, box } : { verdict }) },
     );
   }
 
@@ -100,6 +104,10 @@ type CandidateFile = {
 // without Clerk or Neon.
 export class LocalDevCandidateBackend implements CandidateBackend {
   private verdicts = new Map<string, Verdict>();
+  // Box corrections, keyed the same way. Kept in a SEPARATE map from the loaded
+  // candidates so the dev store mirrors the real schema: the proposal is
+  // immutable, the correction belongs to the review.
+  private boxes = new Map<string, Box>();
   private loaded: Promise<Candidate[]> | null = null;
 
   // The dev file is fetched at most once per session and cached even when it
@@ -128,6 +136,10 @@ export class LocalDevCandidateBackend implements CandidateBackend {
           w: row.w ?? 0,
           h: row.h ?? 0,
           verdict: null,
+          adj_x: null,
+          adj_y: null,
+          adj_w: null,
+          adj_h: null,
         }));
       })();
     }
@@ -139,7 +151,11 @@ export class LocalDevCandidateBackend implements CandidateBackend {
     return all
       .filter((c) => c.ortho_id === orthoId && (batch === undefined || c.batch === batch))
       .sort((a, b) => a.rank - b.rank)
-      .map((c) => ({ ...c, verdict: this.verdicts.get(c.id) ?? null }));
+      .map((c) => ({
+        ...c,
+        verdict: this.verdicts.get(c.id) ?? null,
+        ...boxColumns(this.boxes.get(c.id) ?? null),
+      }));
   }
 
   async candidateSummary(): Promise<CandidateSummary[]> {
@@ -158,12 +174,19 @@ export class LocalDevCandidateBackend implements CandidateBackend {
     return [...byOrtho.values()].sort((a, b) => a.ortho_id.localeCompare(b.ortho_id));
   }
 
-  async setVerdict(id: string, verdict: Verdict): Promise<void> {
+  async setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
     this.verdicts.set(id, verdict);
+    // Omitting the box leaves an existing correction in place, matching the
+    // API route's `on conflict do update` which only touches the columns it was
+    // given.
+    if (box) this.boxes.set(id, box);
   }
 
   async clearVerdict(id: string): Promise<void> {
     this.verdicts.delete(id);
+    // The correction lives in the review row, so clearing the verdict drops it
+    // too — the same cascade the real DELETE gets for free.
+    this.boxes.delete(id);
   }
 }
 
@@ -193,8 +216,8 @@ export class SerializedCandidateBackend implements CandidateBackend {
     return this.inner.candidateSummary();
   }
 
-  setVerdict(id: string, verdict: Verdict): Promise<void> {
-    return this.enqueue(id, () => this.inner.setVerdict(id, verdict));
+  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
+    return this.enqueue(id, () => this.inner.setVerdict(id, verdict, box));
   }
 
   clearVerdict(id: string): Promise<void> {

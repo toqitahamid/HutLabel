@@ -1,24 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_INT4,
   MAX_RANK,
   MAX_SCORE,
   VERDICTS,
+  adjustedBox,
+  adjustedBoxProblems,
+  boxColumns,
+  boxesOverlap,
   candidateBatchProblems,
+  candidateBox,
   candidateInputProblems,
   isValidVerdict,
   nextUnreviewedId,
   restoreVerdict,
   reviewedCount,
+  sameBox,
   stepCandidateId,
   verdictChange,
   verdictForKey,
   verdictLabel,
+  type Box,
   type Candidate,
   type Verdict,
 } from "./model";
 
-// Minimal candidate rows — only the fields the queue logic reads.
-function candidate(id: string, rank: number, verdict: Verdict | null = null): Candidate {
+// Minimal candidate rows — only the fields the queue logic reads. `adj` is the
+// reviewer's own box correction, absent on nearly every fixture here.
+function candidate(
+  id: string,
+  rank: number,
+  verdict: Verdict | null = null,
+  adj: Box | null = null,
+): Candidate {
   return {
     id,
     ortho_id: "demo-site-a",
@@ -29,6 +43,7 @@ function candidate(id: string, rank: number, verdict: Verdict | null = null): Ca
     w: 180,
     h: 180,
     verdict,
+    ...boxColumns(adj),
   };
 }
 
@@ -185,17 +200,19 @@ describe("candidateBatchProblems", () => {
 });
 
 describe("restoreVerdict", () => {
-  // Arguments are (candidates, orthoId, candidateId, optimistic, previous):
-  // `optimistic` is what the failed write put on screen, `previous` is what to
-  // put back.
+  // Arguments are (candidates, orthoId, candidateId, optimistic, previous),
+  // where each state is { verdict, box }: `optimistic` is what the failed write
+  // put on screen, `previous` is what to put back. A verdict-only write passes
+  // the same box on both sides, since it never moved the box.
   const list = [
     candidate("a", 1, "hut"),
     candidate("b", 2, "not_hut"),
     candidate("c", 3),
   ];
+  const state = (verdict: Verdict | null, box: Box | null = null) => ({ verdict, box });
 
   it("puts one row's verdict back, leaving the others alone", () => {
-    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", null);
+    const restored = restoreVerdict(list, "demo-site-a", "a", state("hut"), state(null));
     expect(restored.map((c) => c.verdict)).toEqual([null, "not_hut", null]);
   });
 
@@ -203,7 +220,7 @@ describe("restoreVerdict", () => {
     // 'b' was decided after 'a''s write went out; rolling 'a' back must not
     // take 'b' with it, which a whole-array snapshot restore would.
     const later = list.map((c) => (c.id === "b" ? { ...c, verdict: "unsure" as Verdict } : c));
-    const restored = restoreVerdict(later, "demo-site-a", "a", "hut", null);
+    const restored = restoreVerdict(later, "demo-site-a", "a", state("hut"), state(null));
     expect(restored.find((c) => c.id === "b")?.verdict).toBe("unsure");
   });
 
@@ -214,31 +231,279 @@ describe("restoreVerdict", () => {
     const afterSecondDecision = list.map((c) =>
       c.id === "a" ? { ...c, verdict: "not_hut" as Verdict } : c,
     );
-    expect(restoreVerdict(afterSecondDecision, "demo-site-a", "a", "hut", null)).toBe(
-      afterSecondDecision,
-    );
+    expect(
+      restoreVerdict(afterSecondDecision, "demo-site-a", "a", state("hut"), state(null)),
+    ).toBe(afterSecondDecision);
   });
 
   it("still rolls back when the row holds exactly what the failed write put there", () => {
-    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", "unsure");
+    const restored = restoreVerdict(list, "demo-site-a", "a", state("hut"), state("unsure"));
     expect(restored.find((c) => c.id === "a")?.verdict).toBe("unsure");
   });
 
   it("leaves another ortho's queue completely untouched", () => {
     const otherOrtho = list.map((c) => ({ ...c, ortho_id: "demo-site-b" }));
-    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", "hut", null)).toBe(otherOrtho);
+    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", state("hut"), state(null))).toBe(
+      otherOrtho,
+    );
   });
 
   it("is a no-op when the row is gone or already holds the previous value", () => {
-    expect(restoreVerdict(list, "demo-site-a", "missing", "hut", null)).toBe(list);
-    expect(restoreVerdict(list, "demo-site-a", "a", "hut", "hut")).toBe(list);
-    expect(restoreVerdict([], "demo-site-a", "a", "hut", null)).toEqual([]);
+    expect(restoreVerdict(list, "demo-site-a", "missing", state("hut"), state(null))).toBe(list);
+    expect(restoreVerdict(list, "demo-site-a", "a", state("hut"), state("hut"))).toBe(list);
+    expect(restoreVerdict([], "demo-site-a", "a", state("hut"), state(null))).toEqual([]);
   });
 
   it("rolls a failed CLEAR back to the verdict it removed", () => {
     const cleared = list.map((c) => (c.id === "a" ? { ...c, verdict: null } : c));
-    const restored = restoreVerdict(cleared, "demo-site-a", "a", null, "hut");
+    const restored = restoreVerdict(cleared, "demo-site-a", "a", state(null), state("hut"));
     expect(restored.find((c) => c.id === "a")?.verdict).toBe("hut");
+  });
+
+  // --- the box half ----------------------------------------------------
+
+  const moved: Box = { x: 40, y: 50, w: 60, h: 70 };
+  const movedAgain: Box = { x: 41, y: 51, w: 60, h: 70 };
+
+  it("puts the previous box back when a drag's write failed", () => {
+    // The drag re-sent an existing verdict with a new box; the write failed, so
+    // the box goes back to uncorrected and the verdict stays put.
+    const dragged = [candidate("a", 1, "hut", moved), candidate("b", 2)];
+    const restored = restoreVerdict(
+      dragged,
+      "demo-site-a",
+      "a",
+      { verdict: "hut", box: moved },
+      { verdict: "hut", box: null },
+    );
+    const back = restored.find((c) => c.id === "a")!;
+    expect(adjustedBox(back)).toBeNull();
+    expect(back.verdict).toBe("hut");
+  });
+
+  it("restores an EARLIER correction rather than clearing it outright", () => {
+    const dragged = [candidate("a", 1, "hut", movedAgain)];
+    const restored = restoreVerdict(
+      dragged,
+      "demo-site-a",
+      "a",
+      { verdict: "hut", box: movedAgain },
+      { verdict: "hut", box: moved },
+    );
+    expect(adjustedBox(restored[0])).toEqual(moved);
+  });
+
+  it("does not clobber a NEWER drag on the same candidate", () => {
+    // Drag #1's PUT is still in flight when drag #2 lands and succeeds. When #1
+    // rejects, rolling back would move the box out from under the reviewer and
+    // disagree with what the database now holds.
+    const afterSecondDrag = [candidate("a", 1, "hut", movedAgain)];
+    expect(
+      restoreVerdict(
+        afterSecondDrag,
+        "demo-site-a",
+        "a",
+        { verdict: "hut", box: moved },
+        { verdict: "hut", box: null },
+      ),
+    ).toBe(afterSecondDrag);
+  });
+
+  it("does not let a failed VERDICT write undo a correction dragged meanwhile", () => {
+    // Y went out with no box; the reviewer then dragged the box (which re-sent
+    // the verdict with it) and that landed. The Y's rejection must not roll the
+    // row back to unreviewed AND uncorrected.
+    const afterDrag = [candidate("a", 1, "hut", moved)];
+    expect(
+      restoreVerdict(
+        afterDrag,
+        "demo-site-a",
+        "a",
+        { verdict: "hut", box: null },
+        { verdict: null, box: null },
+      ),
+    ).toBe(afterDrag);
+  });
+
+  it("carries a pending correction through a verdict rollback untouched", () => {
+    // The reviewer dragged before deciding (nothing sent), then pressed Y and
+    // that PUT failed. The verdict goes back to null; the pending box stays,
+    // ready to ride along with whatever they press next.
+    const pending = [candidate("a", 1, "hut", moved)];
+    const restored = restoreVerdict(
+      pending,
+      "demo-site-a",
+      "a",
+      { verdict: "hut", box: moved },
+      { verdict: null, box: moved },
+    );
+    expect(restored[0].verdict).toBeNull();
+    expect(adjustedBox(restored[0])).toEqual(moved);
+  });
+
+  it("is a no-op when both halves already hold the previous state", () => {
+    const dragged = [candidate("a", 1, "hut", moved)];
+    expect(
+      restoreVerdict(
+        dragged,
+        "demo-site-a",
+        "a",
+        { verdict: "hut", box: moved },
+        { verdict: "hut", box: moved },
+      ),
+    ).toBe(dragged);
+  });
+});
+
+describe("adjustedBox / candidateBox / boxColumns", () => {
+  const moved: Box = { x: 40, y: 50, w: 60, h: 70 };
+
+  it("draws the proposal when the reviewer has not moved it", () => {
+    const c = candidate("a", 1);
+    expect(adjustedBox(c)).toBeNull();
+    expect(candidateBox(c)).toEqual({ x: 100, y: 200, w: 180, h: 180 });
+  });
+
+  it("draws the reviewer's correction when there is one, leaving the proposal intact", () => {
+    const c = candidate("a", 1, "hut", moved);
+    expect(adjustedBox(c)).toEqual(moved);
+    expect(candidateBox(c)).toEqual(moved);
+    // The immutable record of what the model proposed is still right there.
+    expect({ x: c.x, y: c.y, w: c.w, h: c.h }).toEqual({ x: 100, y: 200, w: 180, h: 180 });
+  });
+
+  it("treats a half-set correction as no correction at all", () => {
+    // The database forbids this (migration 005's all-or-none check); the reader
+    // still refuses to draw a box out of three numbers and a null.
+    const half = { ...candidate("a", 1, "hut", moved), adj_h: null };
+    expect(adjustedBox(half)).toBeNull();
+    expect(candidateBox(half)).toEqual({ x: 100, y: 200, w: 180, h: 180 });
+  });
+
+  it("round-trips a box through the four nullable columns", () => {
+    expect(boxColumns(moved)).toEqual({ adj_x: 40, adj_y: 50, adj_w: 60, adj_h: 70 });
+    expect(boxColumns(null)).toEqual({
+      adj_x: null,
+      adj_y: null,
+      adj_w: null,
+      adj_h: null,
+    });
+  });
+});
+
+describe("sameBox", () => {
+  it("compares all four numbers", () => {
+    expect(sameBox({ x: 1, y: 2, w: 3, h: 4 }, { x: 1, y: 2, w: 3, h: 4 })).toBe(true);
+    expect(sameBox({ x: 1, y: 2, w: 3, h: 4 }, { x: 1, y: 2, w: 3, h: 5 })).toBe(false);
+  });
+  it("treats absence as its own value", () => {
+    expect(sameBox(null, null)).toBe(true);
+    expect(sameBox(null, { x: 1, y: 2, w: 3, h: 4 })).toBe(false);
+    expect(sameBox({ x: 1, y: 2, w: 3, h: 4 }, null)).toBe(false);
+  });
+});
+
+describe("boxesOverlap", () => {
+  // The rule that decides whether an existing label is revealed next to a
+  // candidate the reviewer has voted on, so its edges matter.
+  const base: Box = { x: 100, y: 100, w: 100, h: 100 }; // 100..200 on both axes
+
+  it("sees a partial overlap from every side", () => {
+    expect(boxesOverlap(base, { x: 150, y: 150, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 50, y: 50, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 150, y: 50, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 50, y: 150, w: 100, h: 100 })).toBe(true);
+  });
+
+  it("is symmetric", () => {
+    const other: Box = { x: 150, y: 150, w: 100, h: 100 };
+    expect(boxesOverlap(base, other)).toBe(boxesOverlap(other, base));
+  });
+
+  it("counts a fully contained box, either way round", () => {
+    const inner: Box = { x: 120, y: 120, w: 10, h: 10 };
+    expect(boxesOverlap(base, inner)).toBe(true);
+    expect(boxesOverlap(inner, base)).toBe(true);
+  });
+
+  it("counts an identical box", () => {
+    expect(boxesOverlap(base, { ...base })).toBe(true);
+  });
+
+  it("does NOT count boxes that merely touch along an edge", () => {
+    // Shared edge, zero area in common — abutting an existing label is not
+    // duplicating it.
+    expect(boxesOverlap(base, { x: 200, y: 100, w: 100, h: 100 })).toBe(false); // right edge
+    expect(boxesOverlap(base, { x: 0, y: 100, w: 100, h: 100 })).toBe(false); // left edge
+    expect(boxesOverlap(base, { x: 100, y: 200, w: 100, h: 100 })).toBe(false); // bottom edge
+    expect(boxesOverlap(base, { x: 100, y: 0, w: 100, h: 100 })).toBe(false); // top edge
+  });
+
+  it("does NOT count boxes meeting at a single corner", () => {
+    expect(boxesOverlap(base, { x: 200, y: 200, w: 100, h: 100 })).toBe(false);
+    expect(boxesOverlap(base, { x: 0, y: 0, w: 100, h: 100 })).toBe(false);
+  });
+
+  it("does not count boxes that miss entirely, on one axis or both", () => {
+    expect(boxesOverlap(base, { x: 400, y: 100, w: 50, h: 50 })).toBe(false);
+    expect(boxesOverlap(base, { x: 100, y: 400, w: 50, h: 50 })).toBe(false);
+    expect(boxesOverlap(base, { x: 400, y: 400, w: 50, h: 50 })).toBe(false);
+  });
+
+  it("sees a one-pixel overlap", () => {
+    expect(boxesOverlap(base, { x: 199, y: 199, w: 100, h: 100 })).toBe(true);
+  });
+});
+
+describe("adjustedBoxProblems", () => {
+  const dims = { width: 8684, height: 31964 };
+
+  it("accepts a box inside the image", () => {
+    expect(adjustedBoxProblems({ x: 100, y: 200, w: 180, h: 180 }, dims)).toEqual([]);
+    // Touching the far edge is inside, the same rule isValidBox uses.
+    expect(adjustedBoxProblems({ x: 8684 - 10, y: 31964 - 10, w: 10, h: 10 }, dims)).toEqual([]);
+  });
+
+  it("rejects a non-object body", () => {
+    expect(adjustedBoxProblems(null, dims)).toEqual(["box must be an object"]);
+    expect(adjustedBoxProblems("nope", dims)).toEqual(["box must be an object"]);
+  });
+
+  it("rejects non-integers and missing fields, naming the field", () => {
+    expect(adjustedBoxProblems({ x: 1.5, y: 0, w: 10, h: 10 }, dims)).toEqual([
+      "box.x must be an integer",
+    ]);
+    expect(adjustedBoxProblems({ x: 0, y: 0, w: 10 }, dims)).toEqual([
+      "box.h must be an integer",
+    ]);
+    expect(adjustedBoxProblems({ x: 0, y: 0, w: 10, h: Number.NaN }, dims)).toEqual([
+      "box.h must be an integer",
+    ]);
+  });
+
+  it("rejects a number past the int4 range before it reaches Postgres", () => {
+    const problems = adjustedBoxProblems({ x: MAX_INT4 + 1, y: 0, w: 10, h: 10 }, dims);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("int4 range");
+  });
+
+  it("rejects a box that leaves the image, or has no extent", () => {
+    for (const box of [
+      { x: -1, y: 0, w: 10, h: 10 },
+      { x: 0, y: -1, w: 10, h: 10 },
+      { x: 0, y: 0, w: 0, h: 10 },
+      { x: 0, y: 0, w: 10, h: 0 },
+      { x: dims.width - 5, y: 0, w: 10, h: 10 },
+      { x: 0, y: dims.height - 5, w: 10, h: 10 },
+    ]) {
+      expect(adjustedBoxProblems(box, dims)).toHaveLength(1);
+    }
+  });
+
+  it("rejects everything when the candidate's ortho could not be resolved", () => {
+    expect(adjustedBoxProblems({ x: 1, y: 1, w: 10, h: 10 }, null)).toEqual([
+      "unknown ortho for this candidate",
+    ]);
   });
 });
 

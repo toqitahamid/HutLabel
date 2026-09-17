@@ -81,8 +81,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       batch = latest[0].batch as string;
     }
 
+    // adj_* comes off the SAME left join as the verdict, so it is this
+    // reviewer's own correction and nobody else's — a box another reviewer
+    // moved is as invisible as their verdict. The proposal's own x/y/w/h stay
+    // in the response too: the client draws the correction when there is one
+    // (candidateBox) and still has the immutable proposal to fall back on, and
+    // to roll back to if a write fails.
     const rows = await db`
-      select c.id, c.ortho_id, c.batch, c.rank, c.x, c.y, c.w, c.h, r.verdict
+      select c.id, c.ortho_id, c.batch, c.rank, c.x, c.y, c.w, c.h,
+             r.verdict, r.adj_x, r.adj_y, r.adj_w, r.adj_h
       from candidates c
       left join candidate_reviews r
         on r.candidate_id = c.id and r.reviewer_id = ${userId}

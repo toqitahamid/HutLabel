@@ -74,6 +74,12 @@ export function CandidatePanel({
               unreviewed candidate; <kbd>J</kbd> / <kbd>K</kbd> step through the
               list by hand.
             </p>
+            <p className="rail-hint">
+              Drag the corner handles to resize this box, or the centre one to
+              move it — your corrected box is saved with your verdict. Existing
+              labels that overlap a candidate appear only once you have voted on
+              it.
+            </p>
           </div>
         </>
       ) : (
