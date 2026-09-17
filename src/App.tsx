@@ -132,6 +132,7 @@ const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
       ["Clear my verdict", "⌫"],
       ["Previous / next candidate", "K / J"],
       ["Same, alternate keys", "[ / ]"],
+      ["Show / hide existing labels", "L"],
     ],
   },
   {
@@ -362,9 +363,10 @@ export default function App() {
   const [markingDone, setMarkingDone] = useState(false);
   const [resetNonce, setResetNonce] = useState(0);
 
-  // Candidate review. `reviewMode` is the blind-review switch: while it's on,
-  // the human huts are hidden, hut editing is off, and the right rail and the
-  // keyboard belong to the candidate queue. `candidateSummary` is loaded once
+  // Candidate review. `reviewMode` is the mode switch: while it's on, hut
+  // editing is off, the existing labels are drawn read-only (see labelsVisible
+  // below), and the right rail and the keyboard belong to the candidate queue.
+  // `candidateSummary` is loaded once
   // and only decides which orthos offer the mode at all (and what the toggle's
   // counter says), so a browsing labeler never pays for a per-ortho probe.
   const [reviewMode, setReviewMode] = useState(false);
@@ -379,6 +381,17 @@ export default function App() {
   // `activeOrtho` whether its own ortho is still current.
   const activeOrthoIdRef = useRef<string | null>(null);
   activeOrthoIdRef.current = activeOrtho?.id ?? null;
+  // Are this ortho's existing labels drawn while reviewing? Shown by default —
+  // the owner asked to see what is already labeled — and `L` hides them again
+  // for a pass that should be blind. UI state only: nothing persists it, and
+  // what DOES persist is which way it was set when each verdict was given
+  // (labels_visible, scripts/migrations/007-review-labels-visible.sql).
+  const [labelsVisible, setLabelsVisible] = useState(true);
+  // Read at call time by the two async writers below: the flag they must record
+  // is the one in force when the reviewer decided, not the one their closure was
+  // built with.
+  const labelsVisibleRef = useRef(true);
+  labelsVisibleRef.current = labelsVisible;
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [candidateSummary, setCandidateSummary] = useState<Map<string, CandidateSummary>>(
@@ -412,14 +425,11 @@ export default function App() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
-  // Load huts whenever the active ortho changes, in review mode too. The blind
-  // review does NOT mean the browser never holds the labels: it means the map
-  // shows a reviewer nothing that could tell them the answer before they have
-  // given one. OrthoMap enforces that, revealing only the huts that overlap a
-  // candidate this reviewer has ALREADY voted on (see revealedHuts there), and
-  // the sidebar's per-ortho counts stay hidden throughout. What the reveal buys
-  // is the thing the PI asked for: knowing when a candidate duplicates a box the
-  // team already annotated, without seeing it beforehand.
+  // Load huts whenever the active ortho changes, in review mode too: the map
+  // draws them there now (the `L` toggle hides them again), so a reviewer can
+  // see when a candidate duplicates a box the team already annotated. The
+  // sidebar's per-ortho counts stay hidden throughout — a "0" next to an ortho
+  // is the answer to the whole queue in one glance, which no drawn box is.
   useEffect(() => {
     if (!activeOrtho) return;
     let cancelled = false;
@@ -486,9 +496,9 @@ export default function App() {
         setCandidates(rows);
         // An ortho the pipeline proposed nothing for leaves the queue empty and
         // the rail saying so. Review mode STAYS ON: dropping out of it here
-        // would re-run the huts effect and paint the human boxes over the map
-        // mid-review, which is the one thing a blind review must never do.
-        // Leaving review mode is always an explicit act — the toggle.
+        // would hand the reviewer an editable map of someone else's labels
+        // because their queue happened to be empty. Leaving review mode is
+        // always an explicit act — the toggle.
         if (rows.length === 0) return;
         handleFocusCandidate(nextUnreviewedId(rows, null) ?? rows[0].id);
       })
@@ -566,7 +576,13 @@ export default function App() {
       }
       try {
         if (next === null) await candidateBackendRef.current.clearVerdict(candidateId);
-        else await candidateBackendRef.current.setVerdict(candidateId, next, box ?? undefined);
+        else
+          await candidateBackendRef.current.setVerdict(candidateId, next, {
+            box: box ?? undefined,
+            // What the reviewer could see at the moment of THIS call, read now
+            // rather than closed over — see labelsVisibleRef.
+            labelsVisible: labelsVisibleRef.current,
+          });
       } catch (e) {
         // Put back THIS row only, and only if it still shows what this write
         // put there. Restoring a whole pre-request snapshot would undo any
@@ -626,7 +642,12 @@ export default function App() {
       );
       if (verdict === null) return; // rides along with the next verdict
       try {
-        await candidateBackendRef.current.setVerdict(candidateId, verdict, next);
+        // Re-sending the verdict re-records the flag too: this write is a fresh
+        // statement of the reviewer's call, made under what is on screen now.
+        await candidateBackendRef.current.setVerdict(candidateId, verdict, {
+          box: next,
+          labelsVisible: labelsVisibleRef.current,
+        });
       } catch (e) {
         // Same one-row, still-shows-what-this-write-put-there rule the verdict
         // path uses: a later drag (or a later verdict) on the same candidate
@@ -1142,6 +1163,11 @@ export default function App() {
         case "stepCandidate":
           handleStepCandidate(action.delta);
           return;
+        case "toggleLabels":
+          // Review mode only (see src/keymap.ts) — and a view switch, not a
+          // write: it changes what is drawn and what the NEXT verdict records.
+          setLabelsVisible((v) => !v);
+          return;
         case "stepOrtho": {
           // preventDefault is deliberately not in the keymap here: whether the
           // step is possible at all depends on the ortho list, so it happens
@@ -1233,7 +1259,7 @@ export default function App() {
               title={
                 reviewMode
                   ? "Leave review mode and go back to labeling"
-                  : "Review the machine candidates on this ortho (hut labels are hidden)"
+                  : "Review the machine candidates on this ortho (L hides the existing labels)"
               }
             >
               <span>
@@ -1419,6 +1445,7 @@ export default function App() {
             focusRequest={focusRequest}
             candidates={candidates}
             reviewMode={reviewMode}
+            showLabels={labelsVisible}
             selectedCandidateId={selectedCandidateId}
             onSelectCandidate={setSelectedCandidateId}
             onAdjustCandidateBox={handleAdjustBox}
@@ -1444,6 +1471,7 @@ export default function App() {
             selectedCandidateId && handleVerdict(selectedCandidateId, "clear")
           }
           onFocusCandidate={handleFocusCandidate}
+          labelsVisible={labelsVisible}
           zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
         />
       ) : (

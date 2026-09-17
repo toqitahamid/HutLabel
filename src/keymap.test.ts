@@ -109,6 +109,26 @@ describe("review-mode bindings", () => {
     expect(resolveKey(press("?"), REVIEW).action).toEqual({ kind: "openHelp" });
   });
 
+  it("toggles the existing labels on L, in either case", () => {
+    for (const key of ["l", "L"]) {
+      const res = resolveKey(press(key), REVIEW);
+      expect(res.action).toEqual({ kind: "toggleLabels" });
+      expect(res.preventDefault).toBe(true);
+    }
+    // Still just a view switch with a stale hut selection hanging around.
+    expect(resolveKey(press("l"), REVIEW_WITH_HUT).action).toEqual({ kind: "toggleLabels" });
+  });
+
+  it("leaves L alone once a modifier is held", () => {
+    // ⌘L is the browser's address bar, Ctrl+L likewise — taking either would
+    // break a key the reviewer expects to work.
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }]) {
+      const res = resolveKey(press("l", mods), REVIEW);
+      expect(res.action).toEqual({ kind: "none" });
+      expect(res.preventDefault).toBe(false);
+    }
+  });
+
   it("does not claim the magnifier's Z", () => {
     // OrthoMap binds Z itself; App must leave it alone in both modes.
     expect(resolveKey(press("z"), REVIEW).action).toEqual({ kind: "none" });
@@ -153,10 +173,19 @@ describe("labeling mode is unchanged", () => {
   });
 
   it("has no review bindings", () => {
-    for (const key of ["y", "n", "u", "j", "k"]) {
+    for (const key of ["y", "n", "u", "j", "k", "l"]) {
       const { action } = resolveKey(press(key), LABEL);
       expect(action.kind).not.toBe("verdict");
       expect(action.kind).not.toBe("stepCandidate");
+      expect(action.kind).not.toBe("toggleLabels");
+    }
+  });
+
+  it("leaves L free while labeling — the labels are the work there", () => {
+    for (const key of ["l", "L"]) {
+      const res = resolveKey(press(key), LABEL);
+      expect(res.action).toEqual({ kind: "none" });
+      expect(res.preventDefault).toBe(false);
     }
   });
 });

@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import type { Ortho } from "../orthos";
 import { tileUrlTemplate } from "../orthos";
 import type { Confidence, Hut } from "../huts/model";
-import { boxesOverlap, candidateBox, type Box, type Candidate, type Verdict } from "../candidates/model";
+import { candidateBox, type Box, type Candidate, type Verdict } from "../candidates/model";
 
 // Slippy-map viewer over a pre-baked tile pyramid (tiler.py) in Leaflet's
 // CRS.Simple pixel space. The single invariant that makes this correct:
@@ -107,12 +107,11 @@ function candidateStyle(verdict: Verdict | null, selected: boolean): L.PathOptio
   };
 }
 
-// An EXISTING hut label, revealed next to a candidate the reviewer has already
-// voted on (see the redraw effect). Deliberately unlike a candidate in every
-// channel: the hut confidence colors, no fill, thin, long-dashed, and inert —
-// there is nothing to click, because in review mode there is nothing a reviewer
-// may do to a human label.
-function revealedHutStyle(confidence: Confidence): L.PathOptions {
+// An EXISTING hut label as review mode draws it (see the redraw effect).
+// Deliberately unlike a candidate in every channel: the hut confidence colors,
+// no fill, thin, long-dashed, and inert — there is nothing to click, because in
+// review mode there is nothing a reviewer may do to a human label.
+function existingLabelStyle(confidence: Confidence): L.PathOptions {
   return {
     color: confidenceColor(confidence),
     weight: 1,
@@ -123,28 +122,14 @@ function revealedHutStyle(confidence: Confidence): L.PathOptions {
   };
 }
 
-// Which existing huts a reviewer is allowed to see right now: those overlapping
-// a candidate they have already given a verdict on, and no others.
-//
-// The blindness is the point of the review — a second observer who can see the
-// first's boxes is not an independent one, and the capture-recapture estimate
-// of missed huts depends on that independence. Revealing a hut only AFTER the
-// verdict is recorded keeps it: the reviewer's call was made without it, and
-// what they gain afterwards is the knowledge that this candidate duplicates a
-// box the team already has.
-//
-// Point huts (w/h null) have no area to overlap and are never revealed, which
-// is also why the return type is narrowed to box huts.
+// The existing labels review mode draws: every BOX hut of this ortho. Point
+// huts (w/h null) are left out — there is no box to outline, and a dot in the
+// hut colors sitting among the candidates reads as something the reviewer could
+// act on — which is also why the return type is narrowed to box huts.
 type BoxHut = Hut & { w: number; h: number };
 
-function revealedHuts(huts: Hut[], candidates: Candidate[]): BoxHut[] {
-  const decided = candidates.filter((c) => c.verdict !== null).map(candidateBox);
-  if (decided.length === 0) return [];
-  return huts.filter((hut): hut is BoxHut => {
-    if (hut.w == null || hut.h == null) return false;
-    const box: Box = { x: hut.x, y: hut.y, w: hut.w, h: hut.h };
-    return decided.some((candidate) => boxesOverlap(box, candidate));
-  });
+function boxHuts(huts: Hut[]): BoxHut[] {
+  return huts.filter((hut): hut is BoxHut => hut.w != null && hut.h != null);
 }
 
 type Corner = "NW" | "NE" | "SW" | "SE";
@@ -334,14 +319,17 @@ export type OrthoMapProps = {
   // against whichever list is on screen (hut and candidate ids are server uuids
   // from two different tables, so they can never collide).
   focusRequest?: { hutId: string; nonce: number } | null;
-  // Candidate review: the machine proposals for this ortho, and the blind-review
+  // Candidate review: the machine proposals for this ortho, and the review-mode
   // switch. While `reviewMode` is on, the box-drawing gesture is inert and the
-  // only human huts drawn are the ones already-voted-on candidates overlap (see
-  // revealedHuts) — the reviewer judges candidates and nothing else. Off, every
-  // one of these is ignored and the map behaves exactly as it did before the
-  // feature existed.
+  // human huts are drawn as inert outlines behind the candidates — the reviewer
+  // judges candidates and can touch nothing else. Off, every one of these is
+  // ignored and the map behaves exactly as it did before the feature existed.
   candidates?: Candidate[];
   reviewMode?: boolean;
+  // Review mode only: draw this ortho's existing labels, or leave them off (the
+  // `L` toggle). Default true — the owner asked to see them from the start.
+  // Hiding them is what a blind pass wants; see labels_visible on the verdict.
+  showLabels?: boolean;
   selectedCandidateId?: string | null;
   onSelectCandidate?: (id: string) => void;
   // Commits the reviewer's correction of the SELECTED candidate's box (native
@@ -362,6 +350,7 @@ export function OrthoMap({
   focusRequest,
   candidates = [],
   reviewMode = false,
+  showLabels = true,
   selectedCandidateId = null,
   onSelectCandidate,
   onAdjustCandidateBox,
@@ -391,6 +380,8 @@ export function OrthoMap({
   selectedCandidateIdRef.current = selectedCandidateId;
   const reviewModeRef = useRef(reviewMode);
   reviewModeRef.current = reviewMode;
+  const showLabelsRef = useRef(showLabels);
+  showLabelsRef.current = showLabels;
   // Latest callback without re-binding the map handlers (which would
   // otherwise force a map teardown just because a parent re-rendered).
   const onPlaceRef = useRef(onPlace);
@@ -771,16 +762,16 @@ export function OrthoMap({
     if (!mag || !layer) return; // magnifier not built yet (or torn down)
     layer.clearLayers();
     if (reviewModeRef.current) {
-      // Same two passes as the main map, in the same order: revealed labels
+      // Same two passes as the main map, in the same order: existing labels
       // underneath, candidates on top. No handles here — the magnifier is a
       // viewport, and editing happens on the map.
-      for (const hut of revealedHuts(hutsRef.current, candidatesRef.current)) {
+      for (const hut of showLabelsRef.current ? boxHuts(hutsRef.current) : []) {
         const topLeft = mag.unproject([hut.x, hut.y], ortho.max_level);
         const bottomRight = mag.unproject(
           [hut.x + hut.w, hut.y + hut.h],
           ortho.max_level,
         );
-        L.rectangle(L.latLngBounds(topLeft, bottomRight), revealedHutStyle(hut.confidence)).addTo(
+        L.rectangle(L.latLngBounds(topLeft, bottomRight), existingLabelStyle(hut.confidence)).addTo(
           layer,
         );
       }
@@ -962,20 +953,21 @@ export function OrthoMap({
     if (!map || !layer) return;
     layer.clearLayers();
 
-    // Review mode draws the candidates, plus the few human huts that overlap a
-    // candidate this reviewer has ALREADY voted on. Every other hut is withheld:
-    // a reviewer who can see where the labeler drew a box is no longer giving an
-    // independent opinion. Revealed huts are inert (revealedHutStyle sets
-    // interactive: false), so there is still nothing here to select, resize or
-    // delete — the only thing a reviewer may move is a candidate's own box.
+    // Review mode draws the candidates over this ortho's existing labels, which
+    // the reviewer can hide again with `L` (showLabels). The labels are inert
+    // either way — existingLabelStyle sets interactive: false — so there is
+    // nothing here to select, resize or delete; the only thing a reviewer may
+    // move is a candidate's own box. Whether they were on screen when a verdict
+    // was given is recorded with that verdict (labels_visible), so an analysis
+    // can still tell a blind call from an informed one.
     if (reviewMode) {
-      for (const hut of revealedHuts(huts, candidates)) {
+      for (const hut of showLabels ? boxHuts(huts) : []) {
         const topLeft = map.unproject([hut.x, hut.y], ortho.max_level);
         const bottomRight = map.unproject(
           [hut.x + hut.w, hut.y + hut.h],
           ortho.max_level,
         );
-        L.rectangle(L.latLngBounds(topLeft, bottomRight), revealedHutStyle(hut.confidence)).addTo(
+        L.rectangle(L.latLngBounds(topLeft, bottomRight), existingLabelStyle(hut.confidence)).addTo(
           layer,
         );
       }
@@ -1171,7 +1163,15 @@ export function OrthoMap({
     // built yet (drawMagnifierBoxes no-ops on missing refs); the
     // magnifier-build effect covers that case with its own draw pass.
     drawMagnifierBoxes();
-  }, [huts, selectedHutId, ortho.max_level, candidates, selectedCandidateId, reviewMode]);
+  }, [
+    huts,
+    selectedHutId,
+    ortho.max_level,
+    candidates,
+    selectedCandidateId,
+    reviewMode,
+    showLabels,
+  ]);
 
   // Cursor hints what's active: grab/grabbing while Space-panning, the
   // box-drawing crosshair the rest of the time — and a plain arrow in review

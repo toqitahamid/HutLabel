@@ -25,7 +25,10 @@ export type KeyAction =
   | { kind: "stepOrtho"; delta: -1 | 1 }
   | { kind: "resetView" }
   | { kind: "verdict"; pressed: Verdict | "clear" }
-  | { kind: "stepCandidate"; delta: -1 | 1 };
+  | { kind: "stepCandidate"; delta: -1 | 1 }
+  // Show/hide the ortho's existing labels while reviewing. A view switch and
+  // nothing more: it reads no hut and writes none.
+  | { kind: "toggleLabels" };
 
 export type KeyResolution = { action: KeyAction; preventDefault: boolean };
 
@@ -85,6 +88,11 @@ export function resolveKey(
     }
     if (e.key === "k" || e.key === "K" || e.key === "[") {
       return { action: { kind: "stepCandidate", delta: -1 }, preventDefault: true };
+    }
+    // L shows/hides the existing labels. Review mode only — while labeling, the
+    // labels are the work, so there is nothing to hide and L stays free.
+    if (e.key === "l" || e.key === "L") {
+      return { action: { kind: "toggleLabels" }, preventDefault: true };
     }
   } else {
     if (e.key === "c" || e.key === "C") {

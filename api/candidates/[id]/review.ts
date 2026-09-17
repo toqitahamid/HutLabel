@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   adjustedBoxProblems,
+  isLabelsVisible,
   isValidVerdict,
   type Box,
   type Verdict,
@@ -21,6 +22,11 @@ import { requireUser, sql } from "../../_lib.js";
 // The correction lands in candidate_reviews.adj_* (migration 005), never on the
 // candidate itself: a run's proposals are the immutable thing its precision is
 // measured against.
+//
+// `labels_visible` (migration 007) records whether the reviewer could see the
+// existing labels at the moment they decided. It is required on every PUT, and
+// it is written, never returned to a reviewer: like `score`, it leaves only
+// through the admin export.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const userId = await requireUser(req, res);
   if (!userId) return;
@@ -32,9 +38,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (req.method === "PUT") {
-    const { verdict, box } = req.body as { verdict?: unknown; box?: unknown };
+    const { verdict, box, labels_visible: labelsVisible } = req.body as {
+      verdict?: unknown;
+      box?: unknown;
+      labels_visible?: unknown;
+    };
     if (!isValidVerdict(verdict)) {
       res.status(400).json({ error: "Invalid verdict" });
+      return;
+    }
+    // Rejected rather than defaulted, and a missing field is rejected too: the
+    // column is nullable only so rows written before it existed can say "not
+    // recorded". Guessing here would put a wrong answer where that null belongs.
+    if (!isLabelsVisible(labelsVisible)) {
+      res.status(400).json({ error: "labels_visible must be true or false" });
       return;
     }
     const db = sql();
@@ -79,23 +96,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // template tag cannot splice a conditional column list (see
       // api/huts/[id].ts). The no-box form deliberately leaves adj_* untouched
       // on conflict, so changing a verdict keeps a correction already made.
+      // labels_visible rides with the verdict in both forms, including an
+      // update: a re-decided candidate is a fresh call, made under whatever the
+      // reviewer could see this time.
       const rows = adjusted
         ? await db`
             insert into candidate_reviews
-              (candidate_id, reviewer_id, verdict, adj_x, adj_y, adj_w, adj_h)
-            values (${id}, ${userId}, ${verdict as Verdict},
+              (candidate_id, reviewer_id, verdict, labels_visible,
+               adj_x, adj_y, adj_w, adj_h)
+            values (${id}, ${userId}, ${verdict as Verdict}, ${labelsVisible},
                     ${adjusted.x}, ${adjusted.y}, ${adjusted.w}, ${adjusted.h})
             on conflict (candidate_id, reviewer_id) do update
               set verdict = excluded.verdict, reviewed_at = now(),
+                  labels_visible = excluded.labels_visible,
                   adj_x = excluded.adj_x, adj_y = excluded.adj_y,
                   adj_w = excluded.adj_w, adj_h = excluded.adj_h
             returning candidate_id
           `
         : await db`
-            insert into candidate_reviews (candidate_id, reviewer_id, verdict)
-            values (${id}, ${userId}, ${verdict as Verdict})
+            insert into candidate_reviews
+              (candidate_id, reviewer_id, verdict, labels_visible)
+            values (${id}, ${userId}, ${verdict as Verdict}, ${labelsVisible})
             on conflict (candidate_id, reviewer_id) do update
-              set verdict = excluded.verdict, reviewed_at = now()
+              set verdict = excluded.verdict, reviewed_at = now(),
+                  labels_visible = excluded.labels_visible
             returning candidate_id
           `;
       res.status(200).json(rows[0]);

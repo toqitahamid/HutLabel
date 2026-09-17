@@ -24,7 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const [candidateRows, reviewRows] = await Promise.all([
     db`select id, batch, ortho_id, rank, x, y, w, h, score, created_at
        from candidates order by batch asc, ortho_id asc, rank asc`,
-    db`select candidate_id, reviewer_id, verdict, reviewed_at,
+    db`select candidate_id, reviewer_id, verdict, reviewed_at, labels_visible,
               adj_x, adj_y, adj_w, adj_h
        from candidate_reviews order by candidate_id asc, reviewer_id asc`,
   ]);
@@ -54,6 +54,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reviewer_id: r.reviewer_id,
       verdict: r.verdict,
       reviewed_at: r.reviewed_at,
+      // Whether this reviewer could see the existing labels when they decided
+      // (scripts/migrations/007-review-labels-visible.sql). null = recorded
+      // before the flag existed. Admin-only, like everything else here: it is
+      // never handed to a reviewer, and this export is how the analysis tells a
+      // blind call from an informed one.
+      labels_visible: r.labels_visible,
       // The reviewer's own correction of the box above, null when they accepted
       // it as drawn (scripts/migrations/005-candidate-box-adjust.sql). All four
       // are set together or not at all, so one null means uncorrected.

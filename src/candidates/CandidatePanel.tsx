@@ -15,6 +15,7 @@ export function CandidatePanel({
   onSetVerdict,
   onClearVerdict,
   onFocusCandidate,
+  labelsVisible,
   zoomSlot,
 }: {
   candidates: Candidate[];
@@ -24,6 +25,10 @@ export function CandidatePanel({
   onSetVerdict: (verdict: Verdict) => void;
   onClearVerdict: () => void;
   onFocusCandidate: (id: string) => void;
+  // Whether the ortho's existing labels are on the map right now (the `L` key,
+  // App's state). Shown here so the hint names what L will do next, and so the
+  // reviewer can see which way it is set without hunting for a dashed box.
+  labelsVisible: boolean;
   zoomSlot?: React.ReactNode;
 }) {
   const selected = candidates.find((c) => c.id === selectedCandidateId) ?? null;
@@ -76,9 +81,7 @@ export function CandidatePanel({
             </p>
             <p className="rail-hint">
               Drag the corner handles to resize this box, or the centre one to
-              move it — your corrected box is saved with your verdict. Existing
-              labels that overlap a candidate appear only once you have voted on
-              it.
+              move it — your corrected box is saved with your verdict.
             </p>
           </div>
         </>
@@ -91,6 +94,17 @@ export function CandidatePanel({
           </p>
         </div>
       )}
+
+      {/* Outside the selected branch: L works whether or not a candidate is
+          picked, and which way it is set is recorded with every verdict. */}
+      <div className="rail-section">
+        <p className="rail-hint">
+          Existing labels are {labelsVisible ? "shown" : "hidden"} — dashed, in
+          their own colours, and not editable here. <kbd>L</kbd>{" "}
+          {labelsVisible ? "hides" : "shows"} them. Each verdict records whether
+          they were on screen when you gave it.
+        </p>
+      </div>
 
       <CandidateList
         candidates={candidates}

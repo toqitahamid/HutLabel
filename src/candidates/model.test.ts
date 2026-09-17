@@ -7,10 +7,10 @@ import {
   adjustedBox,
   adjustedBoxProblems,
   boxColumns,
-  boxesOverlap,
   candidateBatchProblems,
   candidateBox,
   candidateInputProblems,
+  isLabelsVisible,
   isValidVerdict,
   nextUnreviewedId,
   restoreVerdict,
@@ -59,6 +59,28 @@ describe("isValidVerdict", () => {
     expect(isValidVerdict(undefined)).toBe(false);
     expect(isValidVerdict(null)).toBe(false);
     expect(isValidVerdict(1)).toBe(false);
+  });
+});
+
+describe("isLabelsVisible", () => {
+  it("accepts either boolean", () => {
+    expect(isLabelsVisible(true)).toBe(true);
+    expect(isLabelsVisible(false)).toBe(true);
+  });
+
+  it("rejects a missing field rather than reading it as false", () => {
+    // A client that forgot the flag gets a 400. Writing null for it would
+    // claim "recorded before the column existed", which is a different and
+    // false statement about a verdict that was in fact given under one of the
+    // two settings.
+    expect(isLabelsVisible(undefined)).toBe(false);
+    expect(isLabelsVisible(null)).toBe(false);
+  });
+
+  it("rejects the values a sloppy client would send instead", () => {
+    for (const v of ["true", "false", "", 0, 1, [], {}]) {
+      expect(isLabelsVisible(v)).toBe(false);
+    }
   });
 });
 
@@ -400,58 +422,6 @@ describe("sameBox", () => {
     expect(sameBox(null, null)).toBe(true);
     expect(sameBox(null, { x: 1, y: 2, w: 3, h: 4 })).toBe(false);
     expect(sameBox({ x: 1, y: 2, w: 3, h: 4 }, null)).toBe(false);
-  });
-});
-
-describe("boxesOverlap", () => {
-  // The rule that decides whether an existing label is revealed next to a
-  // candidate the reviewer has voted on, so its edges matter.
-  const base: Box = { x: 100, y: 100, w: 100, h: 100 }; // 100..200 on both axes
-
-  it("sees a partial overlap from every side", () => {
-    expect(boxesOverlap(base, { x: 150, y: 150, w: 100, h: 100 })).toBe(true);
-    expect(boxesOverlap(base, { x: 50, y: 50, w: 100, h: 100 })).toBe(true);
-    expect(boxesOverlap(base, { x: 150, y: 50, w: 100, h: 100 })).toBe(true);
-    expect(boxesOverlap(base, { x: 50, y: 150, w: 100, h: 100 })).toBe(true);
-  });
-
-  it("is symmetric", () => {
-    const other: Box = { x: 150, y: 150, w: 100, h: 100 };
-    expect(boxesOverlap(base, other)).toBe(boxesOverlap(other, base));
-  });
-
-  it("counts a fully contained box, either way round", () => {
-    const inner: Box = { x: 120, y: 120, w: 10, h: 10 };
-    expect(boxesOverlap(base, inner)).toBe(true);
-    expect(boxesOverlap(inner, base)).toBe(true);
-  });
-
-  it("counts an identical box", () => {
-    expect(boxesOverlap(base, { ...base })).toBe(true);
-  });
-
-  it("does NOT count boxes that merely touch along an edge", () => {
-    // Shared edge, zero area in common — abutting an existing label is not
-    // duplicating it.
-    expect(boxesOverlap(base, { x: 200, y: 100, w: 100, h: 100 })).toBe(false); // right edge
-    expect(boxesOverlap(base, { x: 0, y: 100, w: 100, h: 100 })).toBe(false); // left edge
-    expect(boxesOverlap(base, { x: 100, y: 200, w: 100, h: 100 })).toBe(false); // bottom edge
-    expect(boxesOverlap(base, { x: 100, y: 0, w: 100, h: 100 })).toBe(false); // top edge
-  });
-
-  it("does NOT count boxes meeting at a single corner", () => {
-    expect(boxesOverlap(base, { x: 200, y: 200, w: 100, h: 100 })).toBe(false);
-    expect(boxesOverlap(base, { x: 0, y: 0, w: 100, h: 100 })).toBe(false);
-  });
-
-  it("does not count boxes that miss entirely, on one axis or both", () => {
-    expect(boxesOverlap(base, { x: 400, y: 100, w: 50, h: 50 })).toBe(false);
-    expect(boxesOverlap(base, { x: 100, y: 400, w: 50, h: 50 })).toBe(false);
-    expect(boxesOverlap(base, { x: 400, y: 400, w: 50, h: 50 })).toBe(false);
-  });
-
-  it("sees a one-pixel overlap", () => {
-    expect(boxesOverlap(base, { x: 199, y: 199, w: 100, h: 100 })).toBe(true);
   });
 });
 

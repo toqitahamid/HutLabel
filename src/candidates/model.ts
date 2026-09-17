@@ -21,6 +21,19 @@ export function isValidVerdict(v: unknown): v is Verdict {
   return (VERDICTS as readonly unknown[]).includes(v);
 }
 
+// Guard for a PUT body's `labels_visible` field — whether the reviewer could
+// see the existing labels when they gave this verdict
+// (scripts/migrations/007-review-labels-visible.sql). Same job isValidVerdict
+// does above, and the same reason: a malformed value must never persist.
+//
+// A MISSING field fails too, deliberately. The column is nullable only so rows
+// written before it existed can say "not recorded"; a client that forgot to
+// send the flag should be told, not handed that null as if the question had
+// been answered.
+export function isLabelsVisible(v: unknown): v is boolean {
+  return typeof v === "boolean";
+}
+
 // Short label for a verdict, used by the candidate list and the map legend.
 export function verdictLabel(verdict: Verdict | null): string {
   if (verdict === "hut") return "hut";
@@ -95,20 +108,6 @@ export function candidateBox(candidate: Candidate): Box {
 export function sameBox(a: Box | null, b: Box | null): boolean {
   if (a === null || b === null) return a === b;
   return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
-}
-
-// Do two boxes share any AREA? Strictly positive overlap: boxes that merely
-// touch along an edge or meet at a corner do not overlap, since a candidate
-// abutting an existing label is not a duplicate of it. Fully contained counts.
-//
-// This is what decides whether an existing hut label is revealed to a reviewer
-// after they have voted on a candidate (see src/viewer/OrthoMap.tsx) — the
-// review itself stays blind, but a candidate that duplicates a box the PI's
-// team already drew becomes visible once the reviewer's own call is recorded.
-export function boxesOverlap(a: Box, b: Box): boolean {
-  return (
-    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
-  );
 }
 
 // Per-ortho progress for the review-mode toggle and the counter: how many

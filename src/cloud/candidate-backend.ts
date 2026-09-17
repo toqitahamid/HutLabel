@@ -16,13 +16,21 @@ export interface CandidateBackend {
   // Per-ortho counts for the review-mode toggle and progress display. One call
   // covering every ortho, so the app doesn't probe each one it shows.
   candidateSummary(): Promise<CandidateSummary[]>;
-  // `box` is the reviewer's own correction of the proposed geometry, sent WITH
-  // the verdict because the row holding it has a NOT NULL verdict — there is no
-  // such thing as a stored correction without a decision. Omitted = leave any
-  // correction already on the row alone.
-  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void>;
+  // `opts.box` is the reviewer's own correction of the proposed geometry, sent
+  // WITH the verdict because the row holding it has a NOT NULL verdict — there
+  // is no such thing as a stored correction without a decision. Omitted = leave
+  // any correction already on the row alone.
+  //
+  // `opts.labelsVisible` is not optional: every verdict records whether this
+  // reviewer could see the existing labels when they gave it
+  // (scripts/migrations/007-review-labels-visible.sql). Making it part of the
+  // signature is how a later caller is stopped from quietly writing a verdict
+  // whose blindness nobody can reconstruct.
+  setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void>;
   clearVerdict(id: string): Promise<void>;
 }
+
+export type VerdictOptions = { box?: Box; labelsVisible: boolean };
 
 type GetToken = () => Promise<string | null>;
 
@@ -67,10 +75,20 @@ export class ApiCandidateBackend implements CandidateBackend {
     return this.call<CandidateSummary[]>("/api/candidates?summary=1");
   }
 
-  async setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
+  async setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void> {
+    const { box, labelsVisible } = opts;
     await this.call<{ candidate_id: string }>(
       `/api/candidates/${encodeURIComponent(id)}/review`,
-      { method: "PUT", body: JSON.stringify(box ? { verdict, box } : { verdict }) },
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          verdict,
+          labels_visible: labelsVisible,
+          // Omitted rather than sent as null, so a verdict-only write leaves a
+          // correction already on the row alone (see the route's two inserts).
+          ...(box ? { box } : {}),
+        }),
+      },
     );
   }
 
@@ -174,12 +192,14 @@ export class LocalDevCandidateBackend implements CandidateBackend {
     return [...byOrtho.values()].sort((a, b) => a.ortho_id.localeCompare(b.ortho_id));
   }
 
-  async setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
+  async setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void> {
     this.verdicts.set(id, verdict);
     // Omitting the box leaves an existing correction in place, matching the
     // API route's `on conflict do update` which only touches the columns it was
-    // given.
-    if (box) this.boxes.set(id, box);
+    // given. `labelsVisible` is accepted and dropped: no reviewer-facing read
+    // returns it (it leaves through the admin export), so storing it here would
+    // be a map nothing can observe.
+    if (opts.box) this.boxes.set(id, opts.box);
   }
 
   async clearVerdict(id: string): Promise<void> {
@@ -216,8 +236,8 @@ export class SerializedCandidateBackend implements CandidateBackend {
     return this.inner.candidateSummary();
   }
 
-  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
-    return this.enqueue(id, () => this.inner.setVerdict(id, verdict, box));
+  setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void> {
+    return this.enqueue(id, () => this.inner.setVerdict(id, verdict, opts));
   }
 
   clearVerdict(id: string): Promise<void> {

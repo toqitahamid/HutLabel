@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ApiCandidateBackend,
   LocalDevCandidateBackend,
   SerializedCandidateBackend,
   type CandidateBackend,
+  type VerdictOptions,
 } from "./candidate-backend";
 import { adjustedBox, type Box, type Candidate, type CandidateSummary, type Verdict } from "../candidates/model";
 
@@ -26,6 +28,11 @@ function stubDevFile(file: unknown | null) {
     ),
   );
 }
+
+// Every verdict write says whether the reviewer could see the existing labels
+// when they gave it. Most tests here are about ordering and storage rather than
+// about that flag, so they pass the default (shown) and name it once.
+const SHOWN: VerdictOptions = { labelsVisible: true };
 
 const DEV_FILE = {
   batch: "demo-batch",
@@ -102,10 +109,10 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     const backend = new LocalDevCandidateBackend();
     const [first] = await backend.listCandidates("demo-site-a");
 
-    await backend.setVerdict(first.id, "hut");
+    await backend.setVerdict(first.id, "hut", SHOWN);
     expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBe("hut");
 
-    await backend.setVerdict(first.id, "not_hut");
+    await backend.setVerdict(first.id, "not_hut", SHOWN);
     expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBe("not_hut");
 
     await backend.clearVerdict(first.id);
@@ -116,7 +123,7 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     stubDevFile(DEV_FILE);
     const backend = new LocalDevCandidateBackend();
     const [first] = await backend.listCandidates("demo-site-a");
-    await backend.setVerdict(first.id, "unsure");
+    await backend.setVerdict(first.id, "unsure", SHOWN);
 
     expect(await backend.candidateSummary()).toEqual([
       { ortho_id: "demo-site-a", candidate_count: 2, reviewed_count: 1 },
@@ -131,7 +138,7 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     expect(adjustedBox(first)).toBeNull(); // the proposal, uncorrected
 
     const moved: Box = { x: 120, y: 240, w: 150, h: 150 };
-    await backend.setVerdict(first.id, "hut", moved);
+    await backend.setVerdict(first.id, "hut", { box: moved, labelsVisible: true });
     const [corrected] = await backend.listCandidates("demo-site-a");
     expect(adjustedBox(corrected)).toEqual(moved);
     // The proposal itself is untouched — it is what the run's precision is
@@ -150,8 +157,8 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     const [first] = await backend.listCandidates("demo-site-a");
     const moved: Box = { x: 120, y: 240, w: 150, h: 150 };
 
-    await backend.setVerdict(first.id, "hut", moved);
-    await backend.setVerdict(first.id, "unsure"); // changed their mind, same box
+    await backend.setVerdict(first.id, "hut", { box: moved, labelsVisible: true });
+    await backend.setVerdict(first.id, "unsure", SHOWN); // changed their mind, same box
     const [after] = await backend.listCandidates("demo-site-a");
     expect(after.verdict).toBe("unsure");
     expect(adjustedBox(after)).toEqual(moved);
@@ -161,7 +168,10 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     stubDevFile(DEV_FILE);
     const backend = new LocalDevCandidateBackend();
     const [first] = await backend.listCandidates("demo-site-a");
-    await backend.setVerdict(first.id, "hut", { x: 120, y: 240, w: 150, h: 150 });
+    await backend.setVerdict(first.id, "hut", {
+      box: { x: 120, y: 240, w: 150, h: 150 },
+      labelsVisible: true,
+    });
 
     await backend.clearVerdict(first.id);
     const [cleared] = await backend.listCandidates("demo-site-a");
@@ -185,6 +195,10 @@ describe("LocalDevCandidateBackend with a dev file", () => {
 class DeferredBackend implements CandidateBackend {
   started: string[] = [];
   finished: string[] = [];
+  // Every options object handed to setVerdict, in call order — the flag is not
+  // part of the labels below (they encode ordering), so this is where a test
+  // checks it survived the wrapper.
+  options: VerdictOptions[] = [];
   private pending: { label: string; resolve: () => void; reject: (e: Error) => void }[] = [];
 
   async listCandidates(): Promise<Candidate[]> {
@@ -193,9 +207,11 @@ class DeferredBackend implements CandidateBackend {
   async candidateSummary(): Promise<CandidateSummary[]> {
     return [];
   }
-  setVerdict(id: string, verdict: Verdict, box?: Box): Promise<void> {
+  setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void> {
+    this.options.push(opts);
     // The box only enters the label when there is one, so the ordering
     // assertions below read the same as before this feature existed.
+    const { box } = opts;
     return this.defer(
       box ? `set:${id}:${verdict}:${box.x},${box.y},${box.w},${box.h}` : `set:${id}:${verdict}`,
     );
@@ -235,8 +251,8 @@ describe("SerializedCandidateBackend", () => {
     const inner = new DeferredBackend();
     const backend = new SerializedCandidateBackend(inner);
 
-    const first = backend.setVerdict("a", "hut");
-    const second = backend.setVerdict("a", "not_hut");
+    const first = backend.setVerdict("a", "hut", SHOWN);
+    const second = backend.setVerdict("a", "not_hut", SHOWN);
     await tick();
 
     // Without serialization both would be in flight, and the server would end
@@ -259,7 +275,7 @@ describe("SerializedCandidateBackend", () => {
     const inner = new DeferredBackend();
     const backend = new SerializedCandidateBackend(inner);
 
-    const first = backend.setVerdict("a", "hut");
+    const first = backend.setVerdict("a", "hut", SHOWN);
     const second = backend.clearVerdict("a");
     await tick();
     expect(inner.started).toEqual(["set:a:hut"]);
@@ -276,8 +292,8 @@ describe("SerializedCandidateBackend", () => {
     const inner = new DeferredBackend();
     const backend = new SerializedCandidateBackend(inner);
 
-    const a = backend.setVerdict("a", "hut");
-    const b = backend.setVerdict("b", "not_hut");
+    const a = backend.setVerdict("a", "hut", SHOWN);
+    const b = backend.setVerdict("b", "not_hut", SHOWN);
     await tick();
     expect(inner.started).toEqual(["set:a:hut", "set:b:not_hut"]);
 
@@ -291,8 +307,8 @@ describe("SerializedCandidateBackend", () => {
     const inner = new DeferredBackend();
     const backend = new SerializedCandidateBackend(inner);
 
-    const first = backend.setVerdict("a", "hut");
-    const second = backend.setVerdict("a", "not_hut");
+    const first = backend.setVerdict("a", "hut", SHOWN);
+    const second = backend.setVerdict("a", "not_hut", SHOWN);
     await tick();
 
     inner.settle("set:a:hut", new Error("boom"));
@@ -310,8 +326,8 @@ describe("SerializedCandidateBackend", () => {
     const inner = new DeferredBackend();
     const backend = new SerializedCandidateBackend(inner);
 
-    const first = backend.setVerdict("a", "hut", { x: 10, y: 20, w: 30, h: 40 });
-    const second = backend.setVerdict("a", "hut", { x: 11, y: 21, w: 30, h: 40 });
+    const first = backend.setVerdict("a", "hut", { box: { x: 10, y: 20, w: 30, h: 40 }, labelsVisible: true });
+    const second = backend.setVerdict("a", "hut", { box: { x: 11, y: 21, w: 30, h: 40 }, labelsVisible: true });
     await tick();
     // Two drags inside one round trip: the LATER box must be the one that
     // reaches the server last, for exactly the reason a later verdict must.
@@ -325,6 +341,25 @@ describe("SerializedCandidateBackend", () => {
     expect(inner.finished).toEqual(["set:a:hut:10,20,30,40", "set:a:hut:11,21,30,40"]);
   });
 
+  it("carries each write's label-visibility flag through unchanged", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    // A reviewer who hides the labels mid-queue: the two verdicts were given
+    // under different conditions, and the wrapper must not smear one over the
+    // other while it is ordering them.
+    const first = backend.setVerdict("a", "hut", { labelsVisible: true });
+    const second = backend.setVerdict("a", "not_hut", { labelsVisible: false });
+    await tick();
+    inner.settle("set:a:hut");
+    await first;
+    await tick();
+    inner.settle("set:a:not_hut");
+    await second;
+
+    expect(inner.options).toEqual([{ labelsVisible: true }, { labelsVisible: false }]);
+  });
+
   it("passes reads straight through", async () => {
     stubDevFile(DEV_FILE);
     const backend = new SerializedCandidateBackend(new LocalDevCandidateBackend());
@@ -336,9 +371,78 @@ describe("SerializedCandidateBackend", () => {
     stubDevFile(DEV_FILE);
     const backend = new SerializedCandidateBackend(new LocalDevCandidateBackend());
     const [first] = await backend.listCandidates("demo-site-a");
-    await backend.setVerdict(first.id, "hut");
+    await backend.setVerdict(first.id, "hut", SHOWN);
     expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBe("hut");
     await backend.clearVerdict(first.id);
     expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBeNull();
+  });
+});
+
+// The /api backend needs no Clerk and no Neon to be checked at the seam that
+// matters here: what it actually PUTs. The verdict route rejects a body whose
+// labels_visible is anything but a boolean (isLabelsVisible, unit-tested in
+// src/candidates/model.test.ts), so a client that quietly omitted it would 400
+// every verdict — the one thing no test would otherwise catch until a reviewer
+// hit it.
+describe("ApiCandidateBackend request bodies", () => {
+  function stubOk() {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, status: 200, json: async () => ({ candidate_id: "c1" }) } as Response;
+      }),
+    );
+    return calls;
+  }
+
+  const backend = () => new ApiCandidateBackend(async () => "test-token");
+
+  function bodyOf(init: RequestInit): Record<string, unknown> {
+    return JSON.parse(init.body as string) as Record<string, unknown>;
+  }
+
+  it("sends labels_visible on a verdict-only write", async () => {
+    const calls = stubOk();
+    await backend().setVerdict("c1", "hut", { labelsVisible: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.method).toBe("PUT");
+    expect(bodyOf(calls[0].init)).toEqual({ verdict: "hut", labels_visible: true });
+  });
+
+  it("sends false as false, not as an omitted field", async () => {
+    // The hidden-labels case is the blind one, so it is the case the analysis
+    // most needs recorded; dropping it would make it indistinguishable from a
+    // row written before the column existed.
+    const calls = stubOk();
+    await backend().setVerdict("c1", "not_hut", { labelsVisible: false });
+    expect(bodyOf(calls[0].init)).toEqual({ verdict: "not_hut", labels_visible: false });
+  });
+
+  it("sends the corrected box alongside it when there is one", async () => {
+    const calls = stubOk();
+    const box: Box = { x: 10, y: 20, w: 30, h: 40 };
+    await backend().setVerdict("c1", "unsure", { box, labelsVisible: false });
+    expect(bodyOf(calls[0].init)).toEqual({
+      verdict: "unsure",
+      labels_visible: false,
+      box,
+    });
+  });
+
+  it("omits box entirely when the reviewer did not move it", async () => {
+    // Not `box: null`: the route leaves an existing correction alone only when
+    // the field is absent.
+    const calls = stubOk();
+    await backend().setVerdict("c1", "hut", { box: undefined, labelsVisible: true });
+    expect(bodyOf(calls[0].init)).not.toHaveProperty("box");
+  });
+
+  it("clears with a DELETE and no body at all", async () => {
+    const calls = stubOk();
+    await backend().clearVerdict("c1");
+    expect(calls[0].init.method).toBe("DELETE");
+    expect(calls[0].init.body).toBeUndefined();
   });
 });

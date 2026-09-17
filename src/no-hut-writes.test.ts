@@ -199,6 +199,7 @@ describe("the app never writes to huts or orthos outside the pre-existing routes
       "scripts/import-candidates.mjs",
       "scripts/migrations/004-candidates.sql",
       "scripts/migrations/005-candidate-box-adjust.sql",
+      "scripts/migrations/007-review-labels-visible.sql",
     ]) {
       expect(SCANNED).toContain(file);
     }
@@ -355,6 +356,48 @@ describe("migration 005", () => {
     for (const col of ["adj_x", "adj_y", "adj_w", "adj_h"]) {
       expect(raw).toContain(`--   drop column ${col}`);
     }
+  });
+});
+
+// Same shape again for the migration that records whether a verdict was given
+// blind. One column, on the feature's own table, and no mention anywhere of the
+// table this whole feature is forbidden to touch.
+describe("migration 007", () => {
+  const FILE = "scripts/migrations/007-review-labels-visible.sql";
+
+  it("alters exactly one table — the feature's own — and drops nothing", () => {
+    const text = commentFree(FILE);
+    expect(text).not.toContain("drop "); // the rollback block is commented out
+    expect(text).not.toContain("create "); // it adds a column, it creates nothing
+    expect(writeTargets(FILE).map((t) => t.identifier)).toEqual(["candidate_reviews"]);
+  });
+
+  it("does not name the label table at all, even in prose", () => {
+    // Checked against the RAW file, comments included, for the same reason 004
+    // and 005 are: the migration has no business referring to the label table,
+    // so there is nothing for a later edit to turn into a statement by accident.
+    expect(sourceOf(FILE).toLowerCase()).not.toContain("huts");
+  });
+
+  it("runs in one transaction and fails loudly on a re-run", () => {
+    const text = commentFree(FILE);
+    expect(text).toContain("begin;");
+    expect(text).toContain("commit;");
+    expect(text).not.toContain("if not exists");
+  });
+
+  it("adds one nullable boolean, with no default to invent an answer", () => {
+    const text = commentFree(FILE);
+    expect(text).toContain("add column labels_visible boolean");
+    // Nullable and default-less on purpose: null means "recorded before this
+    // column existed", and a default would put a made-up answer there instead.
+    expect(text).not.toContain("not null");
+    expect(text).not.toContain("default");
+  });
+
+  it("ships a commented-out rollback that drops only what it added", () => {
+    const raw = sourceOf(FILE);
+    expect(raw).toContain("--   drop column labels_visible;");
   });
 });
 
