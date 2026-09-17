@@ -7,7 +7,7 @@
 // the review-queue rules are unit-testable and shared by the UI and the /api
 // functions.
 
-import { isValidBox } from "../huts/model";
+import { isValidBox } from "../huts/model.js";
 
 // What a reviewer can say about a candidate. "unsure" mirrors the hut label's
 // own doubtful flag: a box the reviewer cannot call either way, which the
