@@ -5,6 +5,7 @@ import "leaflet/dist/leaflet.css";
 import type { Ortho } from "../orthos";
 import { tileUrlTemplate } from "../orthos";
 import type { Confidence, Hut } from "../huts/model";
+import type { Candidate, Verdict } from "../candidates/model";
 
 // Slippy-map viewer over a pre-baked tile pyramid (tiler.py) in Leaflet's
 // CRS.Simple pixel space. The single invariant that makes this correct:
@@ -62,6 +63,44 @@ function confidenceColor(confidence: Confidence): string {
   return confidence === "unsure" ? UNSURE_COLOR : MARKER_COLOR;
 }
 
+// Machine candidates (review mode) draw in a third hue, well clear of both hut
+// colors above and legible over open water and vegetation alike — so a
+// proposal can never be mistaken for a human label. Belt and braces: review
+// mode hides the human boxes entirely, since the review is blind.
+const CANDIDATE_COLOR = "#e845c8"; // magenta, machine candidate
+
+// The verdict rides in the stroke rather than a badge — a badge would be a
+// separate divIcon marker per candidate, and unreadable at the zoom a reviewer
+// actually works at. Unreviewed is a plain solid outline; "hut" fills in and
+// thickens; "not hut" goes hollow, dashed and dimmed; "unsure" is dotted.
+function candidateStyle(verdict: Verdict | null, selected: boolean): L.PathOptions {
+  let weight = 2;
+  let fillOpacity = 0.12;
+  let dashArray: string | undefined;
+  let opacity = 1;
+  if (verdict === "hut") {
+    weight = 3;
+    fillOpacity = 0.3;
+  } else if (verdict === "not_hut") {
+    weight = 1.5;
+    fillOpacity = 0;
+    dashArray = "4 4";
+    opacity = 0.65;
+  } else if (verdict === "unsure") {
+    dashArray = "2 5";
+  }
+  // Selection reads the same way it does for huts: a white stroke, one step
+  // heavier, leaving the verdict's own dash pattern and fill intact.
+  return {
+    color: selected ? "#ffffff" : CANDIDATE_COLOR,
+    weight: selected ? weight + 1.5 : weight,
+    opacity,
+    fillColor: CANDIDATE_COLOR,
+    fillOpacity,
+    dashArray,
+  };
+}
+
 // Global key handlers (Space-to-pan, Z-toggle) must ignore keystrokes meant
 // for a text field elsewhere in the app (e.g. typing "z" while a text input
 // has focus shouldn't toggle the magnifier).
@@ -97,7 +136,19 @@ export type OrthoMapProps = {
   // Set by App when a hut-list row is clicked: fly/pan the map to that hut's
   // box. `nonce` (not just `hutId`) so clicking the SAME already-selected row
   // still re-fires the effect below — "where was it again?" always re-centers.
+  // In review mode the id names a CANDIDATE instead; the fly effect resolves it
+  // against whichever list is on screen (hut and candidate ids are server uuids
+  // from two different tables, so they can never collide).
   focusRequest?: { hutId: string; nonce: number } | null;
+  // Candidate review: the machine proposals for this ortho, and the blind-review
+  // switch. While `reviewMode` is on, human huts are not drawn at all and the
+  // box-drawing gesture is inert — the reviewer judges candidates and nothing
+  // else. Off, every one of these is ignored and the map behaves exactly as it
+  // did before the feature existed.
+  candidates?: Candidate[];
+  reviewMode?: boolean;
+  selectedCandidateId?: string | null;
+  onSelectCandidate?: (id: string) => void;
 };
 
 export function OrthoMap({
@@ -110,6 +161,10 @@ export function OrthoMap({
   magnifierSlotEl,
   resetSignal,
   focusRequest,
+  candidates = [],
+  reviewMode = false,
+  selectedCandidateId = null,
+  onSelectCandidate,
 }: OrthoMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -126,6 +181,16 @@ export function OrthoMap({
   // selectedHutId, so it must read the current selection via a ref too.
   const selectedHutIdRef = useRef(selectedHutId);
   selectedHutIdRef.current = selectedHutId;
+  // Same reason again for the review-mode state: the map/key handlers below are
+  // bound once (mount-only effects) and must see the CURRENT mode, not the one
+  // that was in force when they were created — otherwise entering review mode
+  // would leave box-drawing armed underneath it.
+  const candidatesRef = useRef(candidates);
+  candidatesRef.current = candidates;
+  const selectedCandidateIdRef = useRef(selectedCandidateId);
+  selectedCandidateIdRef.current = selectedCandidateId;
+  const reviewModeRef = useRef(reviewMode);
+  reviewModeRef.current = reviewMode;
   // Latest callback without re-binding the map handlers (which would
   // otherwise force a map teardown just because a parent re-rendered).
   const onPlaceRef = useRef(onPlace);
@@ -266,6 +331,11 @@ export function OrthoMap({
     clearPreviewRef.current = clearPreview;
 
     map.on("mousedown", (e: L.LeafletMouseEvent) => {
+      // Review mode is read-only for huts: never arm a box draw. Guarding at
+      // mousedown is enough for the gesture as a whole (mousemove/mouseup both
+      // bail on a null boxStartRef), but the two below check as well so a drag
+      // already in flight when review mode turns on can't still commit.
+      if (reviewModeRef.current) return;
       if (spaceHeldRef.current || editingHandleRef.current) return;
       // The map's own "mousedown" fires BEFORE a marker's "dragstart" (that
       // only fires once Leaflet's Draggable recognizes real movement), so
@@ -278,6 +348,7 @@ export function OrthoMap({
     });
 
     map.on("mousemove", (e: L.LeafletMouseEvent) => {
+      if (reviewModeRef.current) return;
       if (!boxStartRef.current || spaceHeldRef.current || editingHandleRef.current) return;
       const previewBounds = L.latLngBounds(boxStartRef.current, e.latlng);
       const style = {
@@ -312,6 +383,11 @@ export function OrthoMap({
     });
 
     map.on("mouseup", (e: L.LeafletMouseEvent) => {
+      if (reviewModeRef.current) {
+        boxStartRef.current = null;
+        clearPreview();
+        return;
+      }
       if (!boxStartRef.current || spaceHeldRef.current || editingHandleRef.current) return;
       const start = boxStartRef.current;
       boxStartRef.current = null;
@@ -434,21 +510,27 @@ export function OrthoMap({
     if (!focusRequest) return;
     const map = mapRef.current;
     if (!map) return;
-    const hut = hutsRef.current.find((h) => h.id === focusRequest.hutId);
-    if (!hut) return;
+    // Huts first, then candidates: the id names whichever list is on screen
+    // (see the focusRequest prop comment). Both carry the same native-pixel
+    // geometry, so one piece of fly-to math serves both.
+    const target =
+      hutsRef.current.find((h) => h.id === focusRequest.hutId) ??
+      candidatesRef.current.find((c) => c.id === focusRequest.hutId);
+    if (!target) return;
     const { max_level } = ortho;
     // Same box-vs-point unproject math the marker-draw effect below uses: a
     // box's bounds are its two corners; a point's "bounds" collapse to one
-    // LatLng, which flyToBounds centers on directly.
+    // LatLng, which flyToBounds centers on directly. (Candidates are always
+    // boxes, so only huts ever take the second branch.)
     const bounds =
-      hut.w != null && hut.h != null
+      target.w != null && target.h != null
         ? L.latLngBounds(
-            map.unproject([hut.x, hut.y], max_level),
-            map.unproject([hut.x + hut.w, hut.y + hut.h], max_level),
+            map.unproject([target.x, target.y], max_level),
+            map.unproject([target.x + target.w, target.y + target.h], max_level),
           )
         : L.latLngBounds(
-            map.unproject([hut.x, hut.y], max_level),
-            map.unproject([hut.x, hut.y], max_level),
+            map.unproject([target.x, target.y], max_level),
+            map.unproject([target.x, target.y], max_level),
           );
     map.flyToBounds(bounds, { maxZoom: max_level + 1, padding: [80, 80], duration: 0.4 });
   }, [focusRequest, ortho]);
@@ -457,15 +539,31 @@ export function OrthoMap({
   // judges box tightness there, so the magnifier needs the same rectangles
   // the main map draws (point huts aren't mirrored; there's no tightness to
   // judge and the magnifier stays a viewport, not a second labeling surface).
-  // Reads huts/selection via refs rather than closing over props: this is
-  // called from two effects with different dep arrays (the huts-redraw
+  // In review mode it mirrors the CANDIDATES instead, for the same reason: the
+  // magnifier is where the reviewer actually decides whether a box is a hut.
+  // Reads huts/candidates/selection via refs rather than closing over props:
+  // this is called from two effects with different dep arrays (the redraw
   // effect below, and the magnifier-build effect right after this), so it
   // must be correct no matter which one's closure last ran.
-  function drawMagnifierHuts() {
+  function drawMagnifierBoxes() {
     const mag = magnifierMapRef.current;
     const layer = magnifierMarkerLayerRef.current;
     if (!mag || !layer) return; // magnifier not built yet (or torn down)
     layer.clearLayers();
+    if (reviewModeRef.current) {
+      for (const candidate of candidatesRef.current) {
+        const topLeft = mag.unproject([candidate.x, candidate.y], ortho.max_level);
+        const bottomRight = mag.unproject(
+          [candidate.x + candidate.w, candidate.y + candidate.h],
+          ortho.max_level,
+        );
+        L.rectangle(L.latLngBounds(topLeft, bottomRight), {
+          ...candidateStyle(candidate.verdict, candidate.id === selectedCandidateIdRef.current),
+          interactive: false, // viewport only — no click/select here
+        }).addTo(layer);
+      }
+      return;
+    }
     for (const hut of hutsRef.current) {
       if (hut.w == null || hut.h == null) continue;
       const selected = hut.id === selectedHutIdRef.current;
@@ -535,11 +633,11 @@ export function OrthoMap({
     // The panel is sized by CSS (and may have just appeared via the portal);
     // Leaflet needs a nudge once that layout has actually taken effect.
     const raf = requestAnimationFrame(() => magnifier.invalidateSize());
-    // This map instance is brand new (or just got rebuilt) — the huts-redraw
+    // This map instance is brand new (or just got rebuilt) — the box-redraw
     // effect below won't re-run just because THIS effect did, so the newly
     // (re)built magnifier needs its own draw pass here rather than waiting
     // for the next huts/selection change.
-    drawMagnifierHuts();
+    drawMagnifierBoxes();
 
     return () => {
       cancelAnimationFrame(raf);
@@ -582,6 +680,9 @@ export function OrthoMap({
         return;
       }
       // Magnifier zoom-level, mirroring FlagLabel's [ / ] zoomRadius keys.
+      // Review mode rebinds [ / ] to prev/next candidate (App owns those), so
+      // step aside rather than doing both at once. Z still toggles the panel.
+      if (reviewModeRef.current) return;
       if (e.key === "[") {
         e.preventDefault();
         setMagnifyBoost((b) => Math.max(MAGNIFY_BOOST_MIN, b - 1));
@@ -623,12 +724,38 @@ export function OrthoMap({
     return () => cancelAnimationFrame(raf);
   }, [magnifierOn]);
 
-  // Redraw huts whenever they or the selection change (cheap; no map rebuild).
+  // Redraw whenever the boxes or the selection change (cheap; no map rebuild).
   useEffect(() => {
     const map = mapRef.current;
     const layer = markerLayerRef.current;
     if (!map || !layer) return;
     layer.clearLayers();
+
+    // Review mode draws ONLY the candidates. Human huts are withheld
+    // deliberately — a reviewer who can see where the labeler drew a box is no
+    // longer giving an independent opinion — and with no hut on screen there is
+    // nothing to select, resize or delete either.
+    if (reviewMode) {
+      for (const candidate of candidates) {
+        const topLeft = map.unproject([candidate.x, candidate.y], ortho.max_level);
+        const bottomRight = map.unproject(
+          [candidate.x + candidate.w, candidate.y + candidate.h],
+          ortho.max_level,
+        );
+        const rect = L.rectangle(
+          L.latLngBounds(topLeft, bottomRight),
+          candidateStyle(candidate.verdict, candidate.id === selectedCandidateId),
+        );
+        rect.on("click", (e) => {
+          L.DomEvent.stopPropagation(e);
+          onSelectCandidate?.(candidate.id);
+        });
+        rect.addTo(layer);
+      }
+      drawMagnifierBoxes();
+      return;
+    }
+
     for (const hut of huts) {
       const selected = hut.id === selectedHutId;
       const hutColor = confidenceColor(hut.confidence);
@@ -769,14 +896,21 @@ export function OrthoMap({
       }
     }
     // Mirror the saved boxes onto the magnifier too — a no-op if it isn't
-    // built yet (drawMagnifierHuts no-ops on missing refs); the
+    // built yet (drawMagnifierBoxes no-ops on missing refs); the
     // magnifier-build effect covers that case with its own draw pass.
-    drawMagnifierHuts();
-  }, [huts, selectedHutId, ortho.max_level]);
+    drawMagnifierBoxes();
+  }, [huts, selectedHutId, ortho.max_level, candidates, selectedCandidateId, reviewMode]);
 
   // Cursor hints what's active: grab/grabbing while Space-panning, the
-  // box-drawing crosshair the rest of the time.
-  const cursor = spaceHeld ? (isDragging ? "grabbing" : "grab") : "crosshair";
+  // box-drawing crosshair the rest of the time — and a plain arrow in review
+  // mode, where there is nothing to draw.
+  const cursor = spaceHeld
+    ? isDragging
+      ? "grabbing"
+      : "grab"
+    : reviewMode
+      ? "default"
+      : "crosshair";
 
   // The magnifier panel + its zoom-level slider, portaled into AttributePanel's
   // right rail at magnifierSlotEl — the same top-of-rail position FlagLabel's

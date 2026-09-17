@@ -13,6 +13,10 @@
   --danger: #b91c1c;
   --warning: #fbbf24;
   --danger-soft: #fca5a5;
+  /* Machine candidates (review mode) — a third hue, clear of the hut accent
+     and the unsure amber. Kept in lockstep with CANDIDATE_COLOR in
+     src/viewer/OrthoMap.tsx, which draws the boxes themselves. */
+  --candidate: #e845c8;
 
   --radius-sm: 4px;
   --radius-md: 6px;

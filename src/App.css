@@ -723,6 +723,87 @@
   border-left-color: var(--accent);
 }
 
+/* ---------- Candidate review ---------- */
+
+/* The review-mode toggle in the titlebar, lit while the mode is on so it's
+   obvious at a glance that the hut boxes are hidden on purpose. */
+.key-btn[aria-pressed="true"] {
+  background: var(--candidate);
+  border-color: var(--candidate);
+  color: var(--bg-app);
+}
+
+.key-btn[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--candidate);
+  border-color: var(--candidate);
+  color: var(--bg-app);
+}
+
+/* Three segmented buttons, same idiom as .confidence-toggle above; each lights
+   in its own color when pressed, matching the stroke styles on the map. */
+.verdict-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.verdict-option {
+  flex: 1 1 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: background-color var(--transition-fast) ease,
+    border-color var(--transition-fast) ease, color var(--transition-fast) ease;
+}
+
+.verdict-option:hover {
+  border-color: var(--border-strong);
+}
+
+.verdict-option[aria-pressed="true"] {
+  color: var(--bg-app);
+  font-weight: 500;
+}
+
+.verdict-option.verdict-hut[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.verdict-option.verdict-not_hut[aria-pressed="true"] {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--text-primary);
+}
+
+.verdict-option.verdict-unsure[aria-pressed="true"] {
+  background: #d29922;
+  border-color: #d29922;
+}
+
+.verdict-clear {
+  width: 100%;
+  font-size: 12px;
+}
+
+/* A reviewed row keeps a colored left border, so the list scans as a progress
+   strip: how much of the queue is done, and which way each call went. */
+.candidate-row.verdict-hut {
+  border-left-color: var(--accent);
+}
+
+.candidate-row.verdict-not_hut {
+  border-left-color: var(--danger-soft);
+}
+
+.candidate-row.verdict-unsure {
+  border-left-color: #d29922;
+}
+
 /* ---------- Keyboard help modal ---------- */
 
 .help-backdrop {
