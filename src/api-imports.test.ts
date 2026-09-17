@@ -14,13 +14,14 @@
 // repo's extensionless house style.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const ROOT = resolve(__dirname, "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const API = join(ROOT, "api");
 
 function walk(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
+  return readdirSync(dir).flatMap((name: string) => {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) return walk(full);
     return full.endsWith(".ts") && !full.endsWith(".test.ts") ? [full] : [];
