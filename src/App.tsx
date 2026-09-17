@@ -486,18 +486,26 @@ export default function App() {
 
   const exitReviewMode = useCallback(() => {
     setReviewMode(false);
-    // Fold the pass just done back into the summary, so the toggle's counter is
-    // current without a refetch.
-    setCandidateSummary((prev) => {
-      const row = activeOrtho ? prev.get(activeOrtho.id) : undefined;
-      if (!row || !activeOrtho) return prev;
-      const next = new Map(prev);
-      next.set(activeOrtho.id, { ...row, reviewed_count: reviewedCount(candidates) });
-      return next;
-    });
     setCandidates([]);
     setSelectedCandidateId(null);
-  }, [activeOrtho, candidates]);
+  }, []);
+
+  // Keep the toggle's "reviewed / total" counter in step with the live list.
+  // Done per verdict rather than on the way out of review mode, because ← / →
+  // moves to another ortho WITHOUT leaving review mode — an exit-time fold
+  // would miss every pass the reviewer navigated away from.
+  const applyReviewedCount = useCallback(
+    (orthoId: string, rows: Candidate[]) => {
+      setCandidateSummary((prev) => {
+        const row = prev.get(orthoId);
+        if (!row) return prev;
+        const next = new Map(prev);
+        next.set(orthoId, { ...row, reviewed_count: reviewedCount(rows) });
+        return next;
+      });
+    },
+    [],
+  );
 
   // One path for every verdict gesture — the Y / N / U / ⌫ keys and the rail's
   // buttons both land here. Optimistic-then-revert, the same rule the four hut
@@ -514,6 +522,7 @@ export default function App() {
         c.id === candidateId ? { ...c, verdict: next } : c,
       );
       setCandidates(updated);
+      applyReviewedCount(target.ortho_id, updated);
       // Auto-advance on a verdict but NOT on a clear: deciding is what moves
       // the queue along, whereas clearing is a correction the reviewer is
       // presumably about to redo on the same box.
@@ -526,10 +535,11 @@ export default function App() {
         else await candidateBackendRef.current.setVerdict(candidateId, next);
       } catch (e) {
         setCandidates(prev); // roll back
+        applyReviewedCount(target.ortho_id, prev);
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [candidates, handleFocusCandidate],
+    [candidates, handleFocusCandidate, applyReviewedCount],
   );
 
   // J / K and ] / [ — walk the queue by hand, without deciding anything.
