@@ -199,7 +199,7 @@ describe("the app never writes to huts or orthos outside the pre-existing routes
       "scripts/import-candidates.mjs",
       "scripts/migrations/004-candidates.sql",
       "scripts/migrations/005-candidate-box-adjust.sql",
-      "scripts/migrations/007-review-labels-visible.sql",
+      "scripts/migrations/006-review-labels-visible.sql",
     ]) {
       expect(SCANNED).toContain(file);
     }
@@ -362,8 +362,8 @@ describe("migration 005", () => {
 // Same shape again for the migration that records whether a verdict was given
 // blind. One column, on the feature's own table, and no mention anywhere of the
 // table this whole feature is forbidden to touch.
-describe("migration 007", () => {
-  const FILE = "scripts/migrations/007-review-labels-visible.sql";
+describe("migration 006", () => {
+  const FILE = "scripts/migrations/006-review-labels-visible.sql";
 
   it("alters exactly one table — the feature's own — and drops nothing", () => {
     const text = commentFree(FILE);

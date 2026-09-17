@@ -23,7 +23,7 @@ import { requireUser, sql } from "../../_lib.js";
 // candidate itself: a run's proposals are the immutable thing its precision is
 // measured against.
 //
-// `labels_visible` (migration 007) records whether the reviewer could see the
+// `labels_visible` (migration 006) records whether the reviewer could see the
 // existing labels at the moment they decided. It is required on every PUT, and
 // it is written, never returned to a reviewer: like `score`, it leaves only
 // through the admin export.

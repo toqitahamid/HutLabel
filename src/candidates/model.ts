@@ -23,7 +23,7 @@ export function isValidVerdict(v: unknown): v is Verdict {
 
 // Guard for a PUT body's `labels_visible` field — whether the reviewer could
 // see the existing labels when they gave this verdict
-// (scripts/migrations/007-review-labels-visible.sql). Same job isValidVerdict
+// (scripts/migrations/006-review-labels-visible.sql). Same job isValidVerdict
 // does above, and the same reason: a malformed value must never persist.
 //
 // A MISSING field fails too, deliberately. The column is nullable only so rows

@@ -23,7 +23,7 @@ export interface CandidateBackend {
   //
   // `opts.labelsVisible` is not optional: every verdict records whether this
   // reviewer could see the existing labels when they gave it
-  // (scripts/migrations/007-review-labels-visible.sql). Making it part of the
+  // (scripts/migrations/006-review-labels-visible.sql). Making it part of the
   // signature is how a later caller is stopped from quietly writing a verdict
   // whose blindness nobody can reconstruct.
   setVerdict(id: string, verdict: Verdict, opts: VerdictOptions): Promise<void>;

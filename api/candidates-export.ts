@@ -55,7 +55,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       verdict: r.verdict,
       reviewed_at: r.reviewed_at,
       // Whether this reviewer could see the existing labels when they decided
-      // (scripts/migrations/007-review-labels-visible.sql). null = recorded
+      // (scripts/migrations/006-review-labels-visible.sql). null = recorded
       // before the flag existed. Admin-only, like everything else here: it is
       // never handed to a reviewer, and this export is how the analysis tells a
       // blind call from an informed one.
