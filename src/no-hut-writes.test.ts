@@ -140,6 +140,41 @@ describe("the candidate feature never writes to huts or orthos", () => {
     ]);
   });
 
+  it("migration 004 does not name the label table at all, even in prose", () => {
+    // Stronger than the write-target checks above and checked against the RAW
+    // file, comments included: the migration has no business referring to the
+    // label table, so there is nothing for a later edit to turn into a
+    // statement by accident. `orthos` is exempt — the foreign key needs it.
+    const raw = readFileSync(
+      path.join(ROOT, "scripts/migrations/004-candidates.sql"),
+      "utf8",
+    ).toLowerCase();
+    expect(raw).not.toContain("huts");
+  });
+
+  it("migration 004 is one transaction and re-runnable", () => {
+    const text = sqlText("scripts/migrations/004-candidates.sql");
+    expect(text).toContain("begin;");
+    expect(text).toContain("commit;");
+    expect(text).toContain("create table if not exists candidates");
+    expect(text).toContain("create table if not exists candidate_reviews");
+    expect(text).toContain("create index if not exists candidates_ortho_batch_idx");
+  });
+
+  it("migration 004 carries the constraints the live schema uses", () => {
+    const text = sqlText("scripts/migrations/004-candidates.sql");
+    expect(text).toContain("ortho_id text not null references orthos(id) on delete cascade");
+    for (const check of [
+      "check (rank >= 1)",
+      "check (x >= 0)",
+      "check (y >= 0)",
+      "check (w > 0)",
+      "check (h > 0)",
+    ]) {
+      expect(text).toContain(check);
+    }
+  });
+
   it("has no accept-candidate-as-hut path anywhere in the feature", () => {
     for (const file of SQL_BEARING_FILES) {
       expect(sqlText(file)).not.toContain("insert into huts");
