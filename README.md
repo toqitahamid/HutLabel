@@ -72,6 +72,12 @@ pipeline's score is never sent to the browser, and each reviewer sees only their
 own verdict — which is what makes two independent passes an agreement measure
 rather than an echo.
 
+One known limit: `GET /api/orthos` returns a per-ortho `hut_count` to every
+signed-in user, and review mode does not change that route. So the counts are
+hidden in the UI, not in the network response — review mode is *voluntary*
+blindness for a trusted reviewer, not an access control. The hut boxes
+themselves are not fetched at all while reviewing.
+
 **Existing labels are never changed or removed by this feature.** No candidate
 code path writes to `huts` or `orthos`, migration 004 does not touch them, and
 every hut mutation (create, resize, confidence, delete, undo, redo) refuses

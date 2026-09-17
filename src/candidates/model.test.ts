@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_RANK,
+  MAX_SCORE,
   VERDICTS,
   candidateBatchProblems,
   candidateInputProblems,
@@ -119,6 +120,19 @@ describe("candidateInputProblems", () => {
       .toBeGreaterThan(0);
   });
 
+  it("bounds score to the float4 range the column can hold", () => {
+    // 1e40 is finite in JS but overflows a float4 — a 400, not a 500 from
+    // Postgres halfway through the insert.
+    for (const score of [1e40, -1e40, 1e308]) {
+      expect(candidateInputProblems({ ...good, score }, dims)).toContain(
+        `score must be within the float4 range (±${MAX_SCORE})`,
+      );
+    }
+    expect(candidateInputProblems({ ...good, score: MAX_SCORE }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: -MAX_SCORE }, dims)).toEqual([]);
+    expect(candidateInputProblems({ ...good, score: 0 }, dims)).toEqual([]);
+  });
+
   it("rejects a non-object row outright", () => {
     expect(candidateInputProblems(null, dims)).toEqual(["row must be an object"]);
     expect(candidateInputProblems("nope", dims)).toEqual(["row must be an object"]);
@@ -171,6 +185,9 @@ describe("candidateBatchProblems", () => {
 });
 
 describe("restoreVerdict", () => {
+  // Arguments are (candidates, orthoId, candidateId, optimistic, previous):
+  // `optimistic` is what the failed write put on screen, `previous` is what to
+  // put back.
   const list = [
     candidate("a", 1, "hut"),
     candidate("b", 2, "not_hut"),
@@ -178,27 +195,50 @@ describe("restoreVerdict", () => {
   ];
 
   it("puts one row's verdict back, leaving the others alone", () => {
-    const restored = restoreVerdict(list, "demo-site-a", "a", null);
+    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", null);
     expect(restored.map((c) => c.verdict)).toEqual([null, "not_hut", null]);
   });
 
-  it("does not disturb a verdict landed while the failed request was in flight", () => {
+  it("does not disturb a verdict landed on ANOTHER candidate meanwhile", () => {
     // 'b' was decided after 'a''s write went out; rolling 'a' back must not
     // take 'b' with it, which a whole-array snapshot restore would.
     const later = list.map((c) => (c.id === "b" ? { ...c, verdict: "unsure" as Verdict } : c));
-    const restored = restoreVerdict(later, "demo-site-a", "a", null);
+    const restored = restoreVerdict(later, "demo-site-a", "a", "hut", null);
     expect(restored.find((c) => c.id === "b")?.verdict).toBe("unsure");
+  });
+
+  it("does not clobber a NEWER verdict on the SAME candidate", () => {
+    // Y on 'a' (PUT#1), then N on 'a' (PUT#2 succeeds), then PUT#1 rejects.
+    // Rolling back would show 'a' unreviewed while the database holds not_hut,
+    // and nothing would tell the reviewer the screen had gone stale.
+    const afterSecondDecision = list.map((c) =>
+      c.id === "a" ? { ...c, verdict: "not_hut" as Verdict } : c,
+    );
+    expect(restoreVerdict(afterSecondDecision, "demo-site-a", "a", "hut", null)).toBe(
+      afterSecondDecision,
+    );
+  });
+
+  it("still rolls back when the row holds exactly what the failed write put there", () => {
+    const restored = restoreVerdict(list, "demo-site-a", "a", "hut", "unsure");
+    expect(restored.find((c) => c.id === "a")?.verdict).toBe("unsure");
   });
 
   it("leaves another ortho's queue completely untouched", () => {
     const otherOrtho = list.map((c) => ({ ...c, ortho_id: "demo-site-b" }));
-    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", null)).toBe(otherOrtho);
+    expect(restoreVerdict(otherOrtho, "demo-site-a", "a", "hut", null)).toBe(otherOrtho);
   });
 
-  it("is a no-op when the row is gone or already holds that verdict", () => {
-    expect(restoreVerdict(list, "demo-site-a", "missing", null)).toBe(list);
-    expect(restoreVerdict(list, "demo-site-a", "a", "hut")).toBe(list);
-    expect(restoreVerdict([], "demo-site-a", "a", null)).toEqual([]);
+  it("is a no-op when the row is gone or already holds the previous value", () => {
+    expect(restoreVerdict(list, "demo-site-a", "missing", "hut", null)).toBe(list);
+    expect(restoreVerdict(list, "demo-site-a", "a", "hut", "hut")).toBe(list);
+    expect(restoreVerdict([], "demo-site-a", "a", "hut", null)).toEqual([]);
+  });
+
+  it("rolls a failed CLEAR back to the verdict it removed", () => {
+    const cleared = list.map((c) => (c.id === "a" ? { ...c, verdict: null } : c));
+    const restored = restoreVerdict(cleared, "demo-site-a", "a", null, "hut");
+    expect(restored.find((c) => c.id === "a")?.verdict).toBe("hut");
   });
 });
 

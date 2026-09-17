@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LocalDevCandidateBackend } from "./candidate-backend";
+import {
+  LocalDevCandidateBackend,
+  SerializedCandidateBackend,
+  type CandidateBackend,
+} from "./candidate-backend";
+import type { Candidate, CandidateSummary, Verdict } from "../candidates/model";
 
 // The offline backend is the one implementation that can be exercised without
 // Clerk and Neon, so it carries the tests for the whole interface's contract:
@@ -126,5 +131,146 @@ describe("LocalDevCandidateBackend with a dev file", () => {
     const b = await backend.listCandidates("demo-site-b");
     const ids = new Set([...a, ...b].map((c) => c.id));
     expect(ids.size).toBe(3);
+  });
+});
+
+// A backend whose writes finish only when the test says so, and in whatever
+// order it chooses — the point being that a reviewer can fire Y then N on one
+// box inside a single round trip, and both are unconditional upserts.
+class DeferredBackend implements CandidateBackend {
+  started: string[] = [];
+  finished: string[] = [];
+  private pending: { label: string; resolve: () => void; reject: (e: Error) => void }[] = [];
+
+  async listCandidates(): Promise<Candidate[]> {
+    return [];
+  }
+  async candidateSummary(): Promise<CandidateSummary[]> {
+    return [];
+  }
+  setVerdict(id: string, verdict: Verdict): Promise<void> {
+    return this.defer(`set:${id}:${verdict}`);
+  }
+  clearVerdict(id: string): Promise<void> {
+    return this.defer(`clear:${id}`);
+  }
+
+  private defer(label: string): Promise<void> {
+    this.started.push(label);
+    return new Promise<void>((resolve, reject) => {
+      this.pending.push({
+        label,
+        resolve: () => {
+          this.finished.push(label);
+          resolve();
+        },
+        reject,
+      });
+    });
+  }
+
+  settle(label: string, error?: Error) {
+    const at = this.pending.findIndex((p) => p.label === label);
+    if (at === -1) throw new Error(`nothing in flight called ${label}`);
+    const [entry] = this.pending.splice(at, 1);
+    if (error) entry.reject(error);
+    else entry.resolve();
+  }
+}
+
+// Lets the microtask queue drain so a chained .then() has actually run.
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("SerializedCandidateBackend", () => {
+  it("does not start a second write on one candidate until the first finishes", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    const first = backend.setVerdict("a", "hut");
+    const second = backend.setVerdict("a", "not_hut");
+    await tick();
+
+    // Without serialization both would be in flight, and the server would end
+    // up holding whichever response happened to land last.
+    expect(inner.started).toEqual(["set:a:hut"]);
+
+    inner.settle("set:a:hut");
+    await first;
+    await tick();
+    expect(inner.started).toEqual(["set:a:hut", "set:a:not_hut"]);
+
+    inner.settle("set:a:not_hut");
+    await second;
+    // The newer verdict is the one that reaches the server last, which is what
+    // makes the unconditional upsert safe.
+    expect(inner.finished).toEqual(["set:a:hut", "set:a:not_hut"]);
+  });
+
+  it("orders a clear behind an earlier verdict on the same candidate", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    const first = backend.setVerdict("a", "hut");
+    const second = backend.clearVerdict("a");
+    await tick();
+    expect(inner.started).toEqual(["set:a:hut"]);
+
+    inner.settle("set:a:hut");
+    await first;
+    await tick();
+    inner.settle("clear:a");
+    await second;
+    expect(inner.finished).toEqual(["set:a:hut", "clear:a"]);
+  });
+
+  it("does not make different candidates wait on each other", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    const a = backend.setVerdict("a", "hut");
+    const b = backend.setVerdict("b", "not_hut");
+    await tick();
+    expect(inner.started).toEqual(["set:a:hut", "set:b:not_hut"]);
+
+    // Out of order on purpose: independent boxes have no ordering to preserve.
+    inner.settle("set:b:not_hut");
+    inner.settle("set:a:hut");
+    await Promise.all([a, b]);
+  });
+
+  it("surfaces a failure to the caller but keeps the chain usable", async () => {
+    const inner = new DeferredBackend();
+    const backend = new SerializedCandidateBackend(inner);
+
+    const first = backend.setVerdict("a", "hut");
+    const second = backend.setVerdict("a", "not_hut");
+    await tick();
+
+    inner.settle("set:a:hut", new Error("boom"));
+    // App's optimistic rollback depends on this rejecting.
+    await expect(first).rejects.toThrow("boom");
+    await tick();
+
+    // One failed write must not strand every later write on that candidate.
+    expect(inner.started).toEqual(["set:a:hut", "set:a:not_hut"]);
+    inner.settle("set:a:not_hut");
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it("passes reads straight through", async () => {
+    stubDevFile(DEV_FILE);
+    const backend = new SerializedCandidateBackend(new LocalDevCandidateBackend());
+    expect(await backend.listCandidates("demo-site-a")).toHaveLength(2);
+    expect(await backend.candidateSummary()).toHaveLength(2);
+  });
+
+  it("writes through to the wrapped backend", async () => {
+    stubDevFile(DEV_FILE);
+    const backend = new SerializedCandidateBackend(new LocalDevCandidateBackend());
+    const [first] = await backend.listCandidates("demo-site-a");
+    await backend.setVerdict(first.id, "hut");
+    expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBe("hut");
+    await backend.clearVerdict(first.id);
+    expect((await backend.listCandidates("demo-site-a"))[0].verdict).toBeNull();
   });
 });

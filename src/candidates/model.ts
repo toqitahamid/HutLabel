@@ -86,6 +86,10 @@ export const MAX_CANDIDATE_ROWS = 2000;
 export const MIN_RANK = 1;
 export const MAX_RANK = 2147483647;
 
+// `score` is a float4 column, so anything past this overflows on insert
+// ("value out of range") — a 500 for what is really a malformed request.
+export const MAX_SCORE = 3.4028235e38;
+
 // Everything wrong with one proposed row, as a list rather than a bool, so the
 // caller can reject the WHOLE request naming each bad row instead of inserting
 // a partial batch. `dims` is the claimed ortho's size, or null when no such
@@ -124,8 +128,12 @@ export function candidateInputProblems(
   }
   // score is optional (a pipeline without one still imports), but if present it
   // must be a real number — NaN/Infinity would round-trip as null through JSON.
-  if (score !== undefined && score !== null && !Number.isFinite(score)) {
-    problems.push("score must be a finite number when present");
+  if (score !== undefined && score !== null) {
+    if (!Number.isFinite(score)) {
+      problems.push("score must be a finite number when present");
+    } else if (Math.abs(score as number) > MAX_SCORE) {
+      problems.push(`score must be within the float4 range (±${MAX_SCORE})`);
+    }
   }
   return problems;
 }
@@ -254,17 +262,29 @@ export function reviewedCount(candidates: Candidate[]): number {
 // and if the reviewer has since arrowed to another ortho, it would replace that
 // ortho's queue with the previous one's entirely.
 //
-// The ortho check is what makes it safe to call late: a list belonging to a
-// different ortho is returned untouched, as is one where the row is already
-// gone. Returns the same array reference when there is nothing to change, so
-// React can skip the re-render.
+// `optimistic` is the value the failed write had put on screen, and it is what
+// makes this safe to call late. Three things can have happened by the time a
+// rejection arrives, and only the first should roll anything back:
+//   - the row still shows `optimistic`  -> that failed write is what is on
+//     screen, so put `previous` back;
+//   - the row shows something else      -> a LATER decision on the same
+//     candidate has already landed (Y then N, with the Y's PUT failing after
+//     the N's succeeded). Rolling back would reset the row to unreviewed while
+//     the database holds the newer verdict — the screen would be wrong and the
+//     reviewer would never know;
+//   - the row is gone, or belongs to another ortho -> nothing to do.
+// Returns the same array reference when there is nothing to change, so React
+// can skip the re-render.
 export function restoreVerdict(
   candidates: Candidate[],
   orthoId: string,
   candidateId: string,
-  verdict: Verdict | null,
+  optimistic: Verdict | null,
+  previous: Verdict | null,
 ): Candidate[] {
   const target = candidates.find((c) => c.id === candidateId);
-  if (!target || target.ortho_id !== orthoId || target.verdict === verdict) return candidates;
-  return candidates.map((c) => (c.id === candidateId ? { ...c, verdict } : c));
+  if (!target || target.ortho_id !== orthoId) return candidates;
+  if (target.verdict !== optimistic) return candidates; // a newer decision won
+  if (target.verdict === previous) return candidates;
+  return candidates.map((c) => (c.id === candidateId ? { ...c, verdict: previous } : c));
 }

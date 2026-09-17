@@ -167,10 +167,67 @@ export class LocalDevCandidateBackend implements CandidateBackend {
   }
 }
 
+// Serializes the WRITES on each candidate, one chain per id, and passes reads
+// straight through.
+//
+// A reviewer leaning on the keys can fire Y then N on the same box inside a
+// single round trip. Both are unconditional upserts, so if the responses come
+// back out of order the database is left holding the OLDER verdict while the
+// screen shows the newer one, and nothing anywhere reports a problem. Ordering
+// the two requests is enough to rule that out, and it needs no schema change,
+// no version column and no extra round trip.
+//
+// Per candidate, not global: two different boxes have no ordering relationship,
+// and making them wait on each other would throttle a fast reviewer for
+// nothing.
+export class SerializedCandidateBackend implements CandidateBackend {
+  private chains = new Map<string, Promise<void>>();
+
+  constructor(private inner: CandidateBackend) {}
+
+  listCandidates(orthoId: string, batch?: string): Promise<Candidate[]> {
+    return this.inner.listCandidates(orthoId, batch);
+  }
+
+  candidateSummary(): Promise<CandidateSummary[]> {
+    return this.inner.candidateSummary();
+  }
+
+  setVerdict(id: string, verdict: Verdict): Promise<void> {
+    return this.enqueue(id, () => this.inner.setVerdict(id, verdict));
+  }
+
+  clearVerdict(id: string): Promise<void> {
+    return this.enqueue(id, () => this.inner.clearVerdict(id));
+  }
+
+  private enqueue(id: string, run: () => Promise<void>): Promise<void> {
+    const prior = this.chains.get(id) ?? Promise.resolve();
+    // The chain swallows rejections so one failed write doesn't strand every
+    // later write on that candidate; the promise HANDED BACK still rejects, so
+    // App's optimistic rollback runs as normal.
+    const next = prior.then(run);
+    const settled = next.then(
+      () => {},
+      () => {},
+    );
+    this.chains.set(id, settled);
+    // Drop the entry once this is the last write in flight for that candidate,
+    // so a long session doesn't accumulate one promise per box reviewed.
+    void settled.then(() => {
+      if (this.chains.get(id) === settled) this.chains.delete(id);
+    });
+    return next;
+  }
+}
+
 // Same pick-once rule as makeHutBackend: the /api backend when Clerk is
-// configured, else the offline dev store.
+// configured, else the offline dev store — wrapped either way, since the dev
+// store is what the review flow is rehearsed against.
 export function makeCandidateBackend(getToken: GetToken | null): CandidateBackend {
-  return isCloudConfigured() && getToken
-    ? new ApiCandidateBackend(getToken)
-    : new LocalDevCandidateBackend();
+  const inner =
+    isCloudConfigured() && getToken
+      ? new ApiCandidateBackend(getToken)
+      : new LocalDevCandidateBackend();
+  return new SerializedCandidateBackend(inner);
 }

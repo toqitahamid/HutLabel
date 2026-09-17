@@ -369,6 +369,11 @@ export default function App() {
   // costs no dependency churn on six callbacks.
   const reviewModeRef = useRef(false);
   reviewModeRef.current = reviewMode;
+  // Which ortho is on screen RIGHT NOW, for the async verdict handler: its
+  // closure was made before the reviewer arrowed away, so it cannot ask
+  // `activeOrtho` whether its own ortho is still current.
+  const activeOrthoIdRef = useRef<string | null>(null);
+  activeOrthoIdRef.current = activeOrtho?.id ?? null;
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [candidateSummary, setCandidateSummary] = useState<Map<string, CandidateSummary>>(
@@ -469,18 +474,17 @@ export default function App() {
       .then((rows) => {
         if (cancelled) return;
         setCandidates(rows);
-        if (rows.length === 0) {
-          // Navigated to an ortho the pipeline never proposed anything for —
-          // there is nothing to review, so fall back to labeling rather than
-          // sitting in an empty review rail.
-          setReviewMode(false);
-          return;
-        }
+        // An ortho the pipeline proposed nothing for leaves the queue empty and
+        // the rail saying so. Review mode STAYS ON: dropping out of it here
+        // would re-run the huts effect and paint the human boxes over the map
+        // mid-review, which is the one thing a blind review must never do.
+        // Leaving review mode is always an explicit act — the toggle.
+        if (rows.length === 0) return;
         handleFocusCandidate(nextUnreviewedId(rows, null) ?? rows[0].id);
       })
       .catch((e) => {
+        // Same reasoning as the empty case: surface the error, keep the mode.
         if (cancelled) return;
-        setReviewMode(false);
         setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
@@ -547,12 +551,16 @@ export default function App() {
         if (next === null) await candidateBackendRef.current.clearVerdict(candidateId);
         else await candidateBackendRef.current.setVerdict(candidateId, next);
       } catch (e) {
-        // Put back THIS row only, and only if the queue on screen is still
-        // this ortho's. Restoring a whole pre-request snapshot would undo any
-        // verdict the reviewer landed while the request was in flight, and —
-        // after an arrow to the next ortho — would replace that ortho's queue
-        // with this one's outright.
-        setCandidates((cur) => restoreVerdict(cur, orthoId, candidateId, was));
+        // Put back THIS row only, and only if it still shows what this write
+        // put there. Restoring a whole pre-request snapshot would undo any
+        // verdict the reviewer landed while the request was in flight; passing
+        // `next` through additionally stops a failed write from clobbering a
+        // NEWER decision on the same candidate (see restoreVerdict).
+        setCandidates((cur) => restoreVerdict(cur, orthoId, candidateId, next, was));
+        // Point the reviewer at the box the banner is about, as long as that
+        // ortho's queue is still the one on screen — otherwise the message
+        // refers to something they can't see.
+        if (activeOrthoIdRef.current === orthoId) setSelectedCandidateId(candidateId);
         setError(e instanceof Error ? e.message : String(e));
       }
     },
@@ -1006,6 +1014,13 @@ export default function App() {
         return;
       }
       if (adminPanelOpen) return; // the panel owns the keyboard (incl. its own Esc)
+      if (helpOpen) {
+        // The help modal owns the keyboard while it's open, same as the
+        // welcome card above and the admin panel — otherwise Y / N / U land
+        // verdicts on a candidate the reviewer can't even see behind it.
+        if (e.key === "Escape") setHelpOpen(false);
+        return;
+      }
 
       // Which action a key means lives in src/keymap.ts, as a pure function.
       // That is what lets a test prove, over the whole keyboard, that review
@@ -1027,10 +1042,9 @@ export default function App() {
           handleRedo();
           return;
         case "escape":
-          // Close the help modal first if it's open; otherwise deselect
-          // whichever box the current mode has selected.
-          if (helpOpen) setHelpOpen(false);
-          else if (reviewMode) setSelectedCandidateId(null);
+          // An open help modal already consumed Esc above, so this is purely
+          // "deselect whichever box the current mode has selected".
+          if (reviewMode) setSelectedCandidateId(null);
           else setSelectedHutId(null);
           return;
         case "openHelp":
@@ -1126,9 +1140,11 @@ export default function App() {
             <span>Redo</span>
           </button>
           <span className="title-divider" aria-hidden="true" />
-          {/* Only offered for an ortho the pipeline actually proposed boxes for,
-              so the control never appears on the 30-odd orthos that have none. */}
-          {activeCandidateSummary && activeCandidateSummary.candidate_count > 0 && (
+          {/* Only offered for an ortho the pipeline actually proposed boxes
+              for, so the control never appears on the 30-odd orthos that have
+              none — but ALWAYS while review mode is on, or arrowing onto an
+              empty ortho would hide the only way back out. */}
+          {(reviewMode || (activeCandidateSummary?.candidate_count ?? 0) > 0) && (
             <button
               type="button"
               className="key-btn"
@@ -1143,7 +1159,7 @@ export default function App() {
               <span>
                 {reviewMode
                   ? "Exit review"
-                  : `Review candidates (${activeCandidateSummary.reviewed_count}/${activeCandidateSummary.candidate_count})`}
+                  : `Review candidates (${activeCandidateSummary?.reviewed_count ?? 0}/${activeCandidateSummary?.candidate_count ?? 0})`}
               </span>
             </button>
           )}

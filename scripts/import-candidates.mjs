@@ -36,6 +36,10 @@ export const MAX_CANDIDATE_ROWS = 2000;
 export const MIN_RANK = 1;
 export const MAX_RANK = 2147483647;
 
+// `score` is a float4 column, so anything past this overflows on insert
+// ("value out of range") partway through the batch.
+export const MAX_SCORE = 3.4028235e38;
+
 // Everything wrong with one row, as a list. `dims` is the claimed ortho's size,
 // or null when that ortho is unknown (or when sizes aren't loaded yet, in the
 // file-shape pass below). An empty list means the row is good.
@@ -67,8 +71,12 @@ export function candidateRowProblems(row, dims) {
   if (dims && Number.isInteger(row.y) && Number.isInteger(row.h) && row.y + row.h > dims.height) {
     problems.push(`y + h (${row.y + row.h}) exceeds ortho height ${dims.height}`);
   }
-  if (row.score !== undefined && row.score !== null && !Number.isFinite(row.score)) {
-    problems.push("score must be a finite number when present");
+  if (row.score !== undefined && row.score !== null) {
+    if (!Number.isFinite(row.score)) {
+      problems.push("score must be a finite number when present");
+    } else if (Math.abs(row.score) > MAX_SCORE) {
+      problems.push(`score must be within the float4 range (±${MAX_SCORE})`);
+    }
   }
   return problems;
 }

@@ -16,14 +16,15 @@
 -- `(w is null) = (h is null)` check has no counterpart).
 --
 -- Run this AFTER 001-003 so a fresh replay lands in order. One transaction, so
--- a failure leaves nothing half-created; `if not exists` throughout, so a
--- re-run is a no-op rather than an error.
+-- a failure leaves nothing half-created. Deliberately NOT `if not exists`: a
+-- second run should fail loudly rather than silently accept a leftover table
+-- of the wrong shape as if it were this one.
 --
 -- Not yet applied.
 
 begin;
 
-create table if not exists candidates (
+create table candidates (
   id uuid primary key default gen_random_uuid(),
   ortho_id text not null references orthos(id) on delete cascade,
   -- Provenance label for one pipeline run, e.g. 'dinov3-sat-2026-09-20'. The
@@ -48,9 +49,9 @@ create table if not exists candidates (
 
 -- The read path is "this ortho's candidates in this batch"; the unique index
 -- above leads with `batch`, so it cannot serve that query.
-create index if not exists candidates_ortho_batch_idx on candidates (ortho_id, batch);
+create index candidates_ortho_batch_idx on candidates (ortho_id, batch);
 
-create table if not exists candidate_reviews (
+create table candidate_reviews (
   candidate_id uuid not null references candidates(id) on delete cascade,
   -- Clerk user id, taken from the verified JWT server-side — never from the
   -- request body, the same rule the label table's labeler_id follows, and the

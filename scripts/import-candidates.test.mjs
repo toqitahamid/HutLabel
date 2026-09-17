@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_CANDIDATE_ROWS,
   MAX_RANK,
+  MAX_SCORE,
   candidateRowProblems,
   countByOrtho,
   validateCandidateFile,
@@ -76,6 +77,15 @@ describe("candidateRowProblems", () => {
     expect(candidateRowProblems({ ...ROW, score: Number.NaN }, dims)).toContain(
       "score must be a finite number when present",
     );
+  });
+
+  it("bounds score to the float4 range the column can hold", () => {
+    for (const score of [1e40, -1e40]) {
+      expect(candidateRowProblems({ ...ROW, score }, dims)).toContain(
+        `score must be within the float4 range (±${MAX_SCORE})`,
+      );
+    }
+    expect(candidateRowProblems({ ...ROW, score: MAX_SCORE }, dims)).toEqual([]);
   });
 });
 
