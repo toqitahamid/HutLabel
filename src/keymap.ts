@@ -28,7 +28,11 @@ export type KeyAction =
   | { kind: "stepCandidate"; delta: -1 | 1 }
   // Show/hide the ortho's existing labels while reviewing. A view switch and
   // nothing more: it reads no hut and writes none.
-  | { kind: "toggleLabels" };
+  | { kind: "toggleLabels" }
+  // Put the candidates that sit on an existing label back into the queue (and
+  // take them out again). Also a view switch: it changes which candidates the
+  // reviewer is walked through, and writes nothing anywhere.
+  | { kind: "toggleHidden" };
 
 export type KeyResolution = { action: KeyAction; preventDefault: boolean };
 
@@ -93,6 +97,14 @@ export function resolveKey(
     // labels are the work, so there is nothing to hide and L stays free.
     if (e.key === "l" || e.key === "L") {
       return { action: { kind: "toggleLabels" }, preventDefault: true };
+    }
+    // H reveals the candidates hidden as already labelled, and hides them
+    // again. Free in both modes and in OrthoMap's own bindings; claimed for
+    // review mode only, next to L, because that is the only mode with a queue
+    // to filter. ⌘/Ctrl+H (the browser's history) never reaches here — the
+    // modifier pass-through above returns first.
+    if (e.key === "h" || e.key === "H") {
+      return { action: { kind: "toggleHidden" }, preventDefault: true };
     }
   } else {
     if (e.key === "c" || e.key === "C") {

@@ -110,6 +110,85 @@ export function sameBox(a: Box | null, b: Box | null): boolean {
   return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 }
 
+// Do two boxes share any AREA? Strictly positive overlap: boxes that merely
+// touch along an edge or meet at a corner do not overlap, since a candidate
+// abutting an existing label is not a duplicate of it. Fully contained counts.
+//
+// Restored from 6c99015 (it was deleted in da8058e once the post-verdict label
+// reveal went away and left it with no caller). Same rule, same edges: what it
+// decides now is whether a candidate is hidden from the review queue as
+// already labelled — see partitionQueue below.
+export function boxesOverlap(a: Box, b: Box): boolean {
+  return (
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+  );
+}
+
+// The ortho's existing labels as plain boxes, which is all the overlap test
+// needs. Structural in `huts` rather than typed to Hut so this module keeps its
+// single import (it is loaded by the serverless runtime — see
+// src/api-imports.test.ts).
+//
+// A POINT label (w/h null, the count-only labeling mode) is dropped rather than
+// read as a pixel-sized box: a point has no area, so under the strictly
+// positive rule above nothing could overlap it anyway, and a point says where a
+// hut is without claiming any candidate duplicates it.
+export function labelledBoxes(
+  huts: readonly { x: number; y: number; w: number | null; h: number | null }[],
+): Box[] {
+  const boxes: Box[] = [];
+  for (const hut of huts) {
+    if (hut.w != null && hut.h != null) {
+      boxes.push({ x: hut.x, y: hut.y, w: hut.w, h: hut.h });
+    }
+  }
+  return boxes;
+}
+
+// The review queue split in two: the candidates the reviewer actually works,
+// and the ones hidden because they sit on a box that is already labelled.
+//
+// The reviewer drew every existing label herself, so a candidate overlapping
+// one asks her a question she has already answered. The comparison uses the
+// candidate's DRAWN box — her correction when she moved it, the proposal
+// otherwise (candidateBox) — so a box she nudged onto a label is treated the
+// same as one the pipeline put there.
+//
+// A candidate that ALREADY carries her verdict is never hidden, whatever it
+// overlaps. A verdict she can no longer see is one she can neither revisit nor
+// clear, and a box she dragged onto a label AFTER deciding would otherwise
+// vanish with her decision still recorded. It also keeps the progress counter
+// honest: every hidden candidate is unreviewed, so hiding them lowers the
+// denominator without touching the numerator, and reviewedCount is the same
+// number over `visible` as over the whole list.
+export function partitionQueue(
+  candidates: Candidate[],
+  hutBoxes: readonly Box[],
+): { visible: Candidate[]; hidden: Candidate[] } {
+  // Nothing labelled on this ortho — the overwhelmingly common case (32 of the
+  // 49 orthos have no huts at all). Hand back the same array reference so the
+  // map and the list skip a re-render.
+  if (hutBoxes.length === 0) return { visible: candidates, hidden: [] };
+  const visible: Candidate[] = [];
+  const hidden: Candidate[] = [];
+  for (const candidate of candidates) {
+    if (isAlreadyLabelled(candidate, hutBoxes)) hidden.push(candidate);
+    else visible.push(candidate);
+  }
+  return hidden.length === 0 ? { visible: candidates, hidden } : { visible, hidden };
+}
+
+// One candidate's half of that rule, split out so the "never hide a decided
+// candidate" clause is testable on its own.
+export function isAlreadyLabelled(
+  candidate: Candidate,
+  hutBoxes: readonly Box[],
+): boolean {
+  if (candidate.verdict !== null) return false;
+  const box = candidateBox(candidate);
+  return hutBoxes.some((hut) => boxesOverlap(box, hut));
+}
+
 // Per-ortho progress for the review-mode toggle and the counter: how many
 // candidates the latest batch holds, and how many of them this reviewer has
 // already judged.

@@ -12,7 +12,9 @@ import {
   adjustedBox,
   boxColumns,
   candidateBox,
+  labelledBoxes,
   nextUnreviewedId,
+  partitionQueue,
   restoreVerdict,
   reviewedCount,
   sameBox,
@@ -133,6 +135,7 @@ const HELP_SECTIONS: { title: string; rows: [string, string][] }[] = [
       ["Previous / next candidate", "K / J"],
       ["Same, alternate keys", "[ / ]"],
       ["Show / hide existing labels", "L"],
+      ["Show / hide already-labelled candidates", "H"],
     ],
   },
   {
@@ -392,6 +395,12 @@ export default function App() {
   // built with.
   const labelsVisibleRef = useRef(true);
   labelsVisibleRef.current = labelsVisible;
+  // Are the candidates that sit on an existing label put back into the queue?
+  // Off by default — hiding them is the point — and `H` turns them back on for
+  // a reviewer who wants to look at what was skipped. Session state like
+  // labelsVisible: nothing persists it, and it survives ortho nav so a reviewer
+  // who asked to see them keeps seeing them on the next ortho.
+  const [revealHidden, setRevealHidden] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [candidateSummary, setCandidateSummary] = useState<Map<string, CandidateSummary>>(
@@ -465,6 +474,24 @@ export default function App() {
     [huts, selectedHutId],
   );
 
+  // The review queue, minus the candidates that sit on a box this reviewer has
+  // already labelled. The rule is the client's because the pipeline's import
+  // file knows nothing about the labels (see src/candidates/model.ts); review
+  // mode already has the ortho's huts on hand, drawn or not — hiding a
+  // candidate does not depend on `labelsVisible`, only on what exists.
+  //
+  // `queue` is what the reviewer walks: the map, the list, J / K, the
+  // auto-advance and the progress counter all run off it, so she can never land
+  // on a candidate she cannot see. `candidates` stays the full fetched list —
+  // it is what the verdict and box-drag handlers look ids up in, and what the
+  // hidden count is measured against.
+  const hutBoxes = useMemo(() => labelledBoxes(huts), [huts]);
+  const { visible: visibleCandidates, hidden: hiddenCandidates } = useMemo(
+    () => partitionQueue(candidates, hutBoxes),
+    [candidates, hutBoxes],
+  );
+  const queue = revealHidden ? candidates : visibleCandidates;
+
   // Hut-list row click: select the hut (same as clicking its map marker) AND
   // bump the focus nonce so OrthoMap flies/pans to it — every click bumps,
   // even a re-click on the row that's already selected, so "where was it
@@ -481,26 +508,33 @@ export default function App() {
     setFocusRequest((prev) => ({ hutId: id, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
+  // Which ortho's queue the reviewer has already been landed on, so the effect
+  // below can tell "no selection because nothing has loaded yet" from "no
+  // selection because they pressed Esc". Null = land on the next queue that
+  // arrives.
+  const landedOrthoRef = useRef<string | null>(null);
+
   // Load the active ortho's candidates on entering review mode, and again when
-  // the ortho changes while it's on (← / → nav keeps working there). Lands the
-  // reviewer on the first box they haven't judged yet.
+  // the ortho changes while it's on (← / → nav keeps working there). Where the
+  // reviewer LANDS is decided by the effect below instead of here: the huts
+  // this queue is filtered against are fetched by their own effect, so the
+  // rows arriving is not the moment the visible queue is known.
   useEffect(() => {
     if (!reviewMode || !activeOrtho) return;
     let cancelled = false;
     setCandidates([]);
     setSelectedCandidateId(null);
+    landedOrthoRef.current = null;
     candidateBackendRef.current
       .listCandidates(activeOrtho.id)
       .then((rows) => {
         if (cancelled) return;
-        setCandidates(rows);
         // An ortho the pipeline proposed nothing for leaves the queue empty and
         // the rail saying so. Review mode STAYS ON: dropping out of it here
         // would hand the reviewer an editable map of someone else's labels
         // because their queue happened to be empty. Leaving review mode is
         // always an explicit act — the toggle.
-        if (rows.length === 0) return;
-        handleFocusCandidate(nextUnreviewedId(rows, null) ?? rows[0].id);
+        setCandidates(rows);
       })
       .catch((e) => {
         // Same reasoning as the empty case: surface the error, keep the mode.
@@ -510,12 +544,30 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [reviewMode, activeOrtho, handleFocusCandidate]);
+  }, [reviewMode, activeOrtho]);
+
+  // Keep the selection ON the visible queue. Two situations, one rule:
+  //   - a queue has just arrived (or H has just revealed one) and the reviewer
+  //     is standing nowhere -> land them on the first box they haven't judged;
+  //   - the candidate they are standing on has become hidden -> the huts
+  //     arrived after the candidates did, or H put the hidden ones away again
+  //     while one was selected, or they dragged an unreviewed box onto an
+  //     existing label. Move them to the next thing they can actually see.
+  // Esc is the case this must NOT fight: it clears the selection deliberately,
+  // and landedOrthoRef is what tells that apart from "nothing has loaded yet".
+  useEffect(() => {
+    if (!reviewMode || !activeOrtho || queue.length === 0) return;
+    if (selectedCandidateId !== null && queue.some((c) => c.id === selectedCandidateId)) return;
+    if (selectedCandidateId === null && landedOrthoRef.current === activeOrtho.id) return;
+    landedOrthoRef.current = activeOrtho.id;
+    handleFocusCandidate(nextUnreviewedId(queue, null) ?? queue[0].id);
+  }, [reviewMode, activeOrtho, queue, selectedCandidateId, handleFocusCandidate]);
 
   const enterReviewMode = useCallback(() => {
     // Nothing of the labeling session survives into a blind review: drop the
     // hut selection so its box/handles are gone before the huts themselves are.
     setSelectedHutId(null);
+    landedOrthoRef.current = null;
     setReviewMode(true);
   }, []);
 
@@ -523,6 +575,7 @@ export default function App() {
     setReviewMode(false);
     setCandidates([]);
     setSelectedCandidateId(null);
+    landedOrthoRef.current = null;
   }, []);
 
   // Keep the toggle's "reviewed / total" counter in step with the live list.
@@ -569,9 +622,13 @@ export default function App() {
       setCandidates(updated);
       // Auto-advance on a verdict but NOT on a clear: deciding is what moves
       // the queue along, whereas clearing is a correction the reviewer is
-      // presumably about to redo on the same box.
+      // presumably about to redo on the same box. Over the VISIBLE queue, so
+      // "next unreviewed" never lands on a candidate that is hidden as already
+      // labelled — recomputed from `updated` rather than read off `queue`,
+      // which still holds the pre-verdict list in this render.
       if (next !== null) {
-        const advanceTo = nextUnreviewedId(updated, candidateId);
+        const nextQueue = revealHidden ? updated : partitionQueue(updated, hutBoxes).visible;
+        const advanceTo = nextUnreviewedId(nextQueue, candidateId);
         if (advanceTo) handleFocusCandidate(advanceTo);
       }
       try {
@@ -605,7 +662,7 @@ export default function App() {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [candidates, handleFocusCandidate],
+    [candidates, hutBoxes, revealHidden, handleFocusCandidate],
   );
 
   // The reviewer's correction of a candidate's box (OrthoMap's corner and
@@ -668,13 +725,16 @@ export default function App() {
     [candidates],
   );
 
-  // J / K and ] / [ — walk the queue by hand, without deciding anything.
+  // J / K and ] / [ — walk the queue by hand, without deciding anything. The
+  // VISIBLE queue: stepping never stops on a candidate hidden as already
+  // labelled, which is also what makes the list's "#n" positions match the
+  // order the keys walk.
   const handleStepCandidate = useCallback(
     (delta: number) => {
-      const next = stepCandidateId(candidates, selectedCandidateId, delta);
+      const next = stepCandidateId(queue, selectedCandidateId, delta);
       if (next && next !== selectedCandidateId) handleFocusCandidate(next);
     },
-    [candidates, selectedCandidateId, handleFocusCandidate],
+    [queue, selectedCandidateId, handleFocusCandidate],
   );
 
   // Orthos grouped by site, each site's visits sorted, for the explorer tree.
@@ -1168,6 +1228,12 @@ export default function App() {
           // write: it changes what is drawn and what the NEXT verdict records.
           setLabelsVisible((v) => !v);
           return;
+        case "toggleHidden":
+          // Review mode only, and it changes nothing but which candidates are
+          // in the queue. `labels_visible` is untouched: what the reviewer
+          // could SEE is still the L toggle, whatever H is set to.
+          setRevealHidden((v) => !v);
+          return;
         case "stepOrtho": {
           // preventDefault is deliberately not in the keymap here: whether the
           // step is possible at all depends on the ortho list, so it happens
@@ -1259,7 +1325,13 @@ export default function App() {
               title={
                 reviewMode
                   ? "Leave review mode and go back to labeling"
-                  : "Review the machine candidates on this ortho (L hides the existing labels)"
+                  : // The count is the whole proposed batch: whether a candidate
+                    // sits on an existing label is worked out in the browser,
+                    // from huts the queue itself hasn't fetched yet, so this
+                    // number cannot subtract them. The rail's counter, once
+                    // inside, is the visible queue.
+                    "Review the machine candidates proposed on this ortho " +
+                    "(L hides the existing labels, H reveals candidates that sit on one)"
               }
             >
               <span>
@@ -1443,7 +1515,7 @@ export default function App() {
             magnifierSlotEl={zoomSlotEl}
             resetSignal={resetNonce}
             focusRequest={focusRequest}
-            candidates={candidates}
+            candidates={queue}
             reviewMode={reviewMode}
             showLabels={labelsVisible}
             selectedCandidateId={selectedCandidateId}
@@ -1462,7 +1534,10 @@ export default function App() {
           mounted (OrthoMap rebuilds it when the slot node changes). */}
       {reviewMode ? (
         <CandidatePanel
-          candidates={candidates}
+          candidates={queue}
+          hiddenCount={hiddenCandidates.length}
+          revealHidden={revealHidden}
+          batch={candidates[0]?.batch ?? null}
           selectedCandidateId={selectedCandidateId}
           onSetVerdict={(verdict) =>
             selectedCandidateId && handleVerdict(selectedCandidateId, verdict)

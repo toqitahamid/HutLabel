@@ -35,7 +35,11 @@ export function CandidateList({
         <span>Candidates ({candidates.length})</span>
       </div>
       {candidates.length === 0 ? (
-        <p className="rail-hint">No candidates on this ortho.</p>
+        // "in the queue", not "on this ortho": the rows this list is given are
+        // the visible queue, so an ortho whose candidates are all hidden as
+        // already labelled would be described wrongly by the stronger claim.
+        // The panel above says which of the two it is.
+        <p className="rail-hint">No candidates in the queue.</p>
       ) : (
         <div className="hut-list">
           {candidates.map((candidate, i) => {

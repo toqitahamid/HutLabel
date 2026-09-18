@@ -9,10 +9,14 @@ import {
   boxColumns,
   candidateBatchProblems,
   candidateBox,
+  boxesOverlap,
   candidateInputProblems,
+  isAlreadyLabelled,
   isLabelsVisible,
   isValidVerdict,
+  labelledBoxes,
   nextUnreviewedId,
+  partitionQueue,
   restoreVerdict,
   reviewedCount,
   sameBox,
@@ -422,6 +426,228 @@ describe("sameBox", () => {
     expect(sameBox(null, null)).toBe(true);
     expect(sameBox(null, { x: 1, y: 2, w: 3, h: 4 })).toBe(false);
     expect(sameBox({ x: 1, y: 2, w: 3, h: 4 }, null)).toBe(false);
+  });
+});
+
+describe("boxesOverlap", () => {
+  // The rule that decides whether a candidate is hidden from the review queue
+  // as already labelled, so its edges matter.
+  const base: Box = { x: 100, y: 100, w: 100, h: 100 }; // 100..200 on both axes
+
+  it("sees a partial overlap from every side", () => {
+    expect(boxesOverlap(base, { x: 150, y: 150, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 50, y: 50, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 150, y: 50, w: 100, h: 100 })).toBe(true);
+    expect(boxesOverlap(base, { x: 50, y: 150, w: 100, h: 100 })).toBe(true);
+  });
+
+  it("is symmetric", () => {
+    const other: Box = { x: 150, y: 150, w: 100, h: 100 };
+    expect(boxesOverlap(base, other)).toBe(boxesOverlap(other, base));
+  });
+
+  it("counts a fully contained box, either way round", () => {
+    const inner: Box = { x: 120, y: 120, w: 10, h: 10 };
+    expect(boxesOverlap(base, inner)).toBe(true);
+    expect(boxesOverlap(inner, base)).toBe(true);
+  });
+
+  it("counts an identical box", () => {
+    expect(boxesOverlap(base, { ...base })).toBe(true);
+  });
+
+  it("does NOT count boxes that merely touch along an edge", () => {
+    // Shared edge, zero area in common — abutting an existing label is not
+    // duplicating it.
+    expect(boxesOverlap(base, { x: 200, y: 100, w: 100, h: 100 })).toBe(false); // right
+    expect(boxesOverlap(base, { x: 0, y: 100, w: 100, h: 100 })).toBe(false); // left
+    expect(boxesOverlap(base, { x: 100, y: 200, w: 100, h: 100 })).toBe(false); // bottom
+    expect(boxesOverlap(base, { x: 100, y: 0, w: 100, h: 100 })).toBe(false); // top
+  });
+
+  it("does NOT count boxes meeting at a single corner", () => {
+    expect(boxesOverlap(base, { x: 200, y: 200, w: 100, h: 100 })).toBe(false);
+    expect(boxesOverlap(base, { x: 0, y: 0, w: 100, h: 100 })).toBe(false);
+  });
+
+  it("keeps boxes well apart apart", () => {
+    expect(boxesOverlap(base, { x: 1000, y: 1000, w: 100, h: 100 })).toBe(false);
+    expect(boxesOverlap(base, { x: 100, y: 1000, w: 100, h: 100 })).toBe(false); // same column
+  });
+});
+
+describe("labelledBoxes", () => {
+  it("keeps the box labels, in order", () => {
+    expect(
+      labelledBoxes([
+        { x: 10, y: 20, w: 30, h: 40 },
+        { x: 50, y: 60, w: 70, h: 80 },
+      ]),
+    ).toEqual([
+      { x: 10, y: 20, w: 30, h: 40 },
+      { x: 50, y: 60, w: 70, h: 80 },
+    ]);
+  });
+
+  it("drops a point label rather than reading it as a zero-sized box", () => {
+    // A point has no area, so nothing overlaps it under the strictly positive
+    // rule — dropping it here says that once instead of at every comparison.
+    expect(labelledBoxes([{ x: 10, y: 20, w: null, h: null }])).toEqual([]);
+    // A half-set row (no schema allows it, but the type does) is not a box.
+    expect(labelledBoxes([{ x: 10, y: 20, w: 30, h: null }])).toEqual([]);
+    expect(labelledBoxes([{ x: 10, y: 20, w: null, h: 40 }])).toEqual([]);
+  });
+
+  it("handles an ortho with no labels at all", () => {
+    expect(labelledBoxes([])).toEqual([]);
+  });
+});
+
+describe("partitionQueue", () => {
+  // Geometry spelled out rather than derived from rank: which box sits on which
+  // label is the whole subject here.
+  function at(id: string, rank: number, box: Box, verdict: Verdict | null = null, adj: Box | null = null) {
+    return { ...candidate(id, rank, verdict, adj), ...box };
+  }
+  const label: Box = { x: 1000, y: 1000, w: 200, h: 200 }; // 1000..1200
+  const onLabel: Box = { x: 1100, y: 1100, w: 200, h: 200 };
+  const elsewhere: Box = { x: 5000, y: 5000, w: 200, h: 200 };
+
+  it("hides an unreviewed candidate that overlaps a label", () => {
+    const rows = [at("a", 1, elsewhere), at("b", 2, onLabel)];
+    const { visible, hidden } = partitionQueue(rows, [label]);
+    expect(visible.map((c) => c.id)).toEqual(["a"]);
+    expect(hidden.map((c) => c.id)).toEqual(["b"]);
+  });
+
+  it("keeps everything, by reference, when the ortho has no labels", () => {
+    const rows = [at("a", 1, onLabel), at("b", 2, elsewhere)];
+    const { visible, hidden } = partitionQueue(rows, []);
+    expect(visible).toBe(rows); // same array: nothing for React to re-render
+    expect(hidden).toEqual([]);
+  });
+
+  it("keeps the same array when labels exist but nothing overlaps", () => {
+    const rows = [at("a", 1, elsewhere)];
+    expect(partitionQueue(rows, [label]).visible).toBe(rows);
+  });
+
+  it("never hides a candidate that already carries a verdict", () => {
+    // She decided on it; a verdict she cannot see is one she cannot revisit or
+    // clear. True however it came to overlap — including a box she dragged onto
+    // a label after deciding.
+    for (const verdict of VERDICTS) {
+      const rows = [at("a", 1, onLabel, verdict)];
+      expect(partitionQueue(rows, [label]).hidden).toEqual([]);
+    }
+    const dragged = [at("a", 1, elsewhere, "hut", onLabel)];
+    expect(partitionQueue(dragged, [label]).hidden).toEqual([]);
+  });
+
+  it("judges the DRAWN box, so an unreviewed nudge onto a label hides it", () => {
+    const nudged = [at("a", 1, elsewhere, null, onLabel)];
+    expect(partitionQueue(nudged, [label]).hidden.map((c) => c.id)).toEqual(["a"]);
+  });
+
+  it("judges the DRAWN box the other way too: nudged OFF a label, it stays", () => {
+    const moved = [at("a", 1, onLabel, null, elsewhere)];
+    expect(partitionQueue(moved, [label]).hidden).toEqual([]);
+  });
+
+  it("does not hide a candidate that merely touches a label's edge", () => {
+    const touching = [at("a", 1, { x: 1200, y: 1000, w: 200, h: 200 })];
+    expect(partitionQueue(touching, [label]).hidden).toEqual([]);
+  });
+
+  it("hides a candidate that contains a label, or is contained by one", () => {
+    const around = [at("a", 1, { x: 900, y: 900, w: 500, h: 500 })];
+    expect(partitionQueue(around, [label]).hidden.map((c) => c.id)).toEqual(["a"]);
+    const inside = [at("a", 1, { x: 1050, y: 1050, w: 20, h: 20 })];
+    expect(partitionQueue(inside, [label]).hidden.map((c) => c.id)).toEqual(["a"]);
+  });
+
+  it("checks every label, not just the first", () => {
+    const second: Box = { x: 4000, y: 4000, w: 200, h: 200 };
+    const rows = [at("a", 1, { x: 4100, y: 4100, w: 100, h: 100 })];
+    expect(partitionQueue(rows, [label, second]).hidden.map((c) => c.id)).toEqual(["a"]);
+  });
+
+  it("agrees with isAlreadyLabelled row by row", () => {
+    const rows = [at("a", 1, elsewhere), at("b", 2, onLabel), at("c", 3, onLabel, "not_hut")];
+    const { hidden } = partitionQueue(rows, [label]);
+    expect(rows.filter((c) => isAlreadyLabelled(c, [label]))).toEqual(hidden);
+  });
+
+  it("keeps rank order within each half", () => {
+    const rows = [at("a", 1, onLabel), at("b", 2, elsewhere), at("c", 3, onLabel), at("d", 4, elsewhere)];
+    const { visible, hidden } = partitionQueue(rows, [label]);
+    expect(visible.map((c) => c.id)).toEqual(["b", "d"]);
+    expect(hidden.map((c) => c.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("the queue helpers over a filtered queue", () => {
+  // What App feeds stepCandidateId / nextUnreviewedId / reviewedCount once the
+  // already-labelled candidates are out: the reviewer must never land on one,
+  // and the progress denominator must not count one.
+  function at(id: string, rank: number, box: Box, verdict: Verdict | null = null) {
+    return { ...candidate(id, rank, verdict), ...box };
+  }
+  const label: Box = { x: 1000, y: 1000, w: 200, h: 200 };
+  const on: Box = { x: 1100, y: 1100, w: 100, h: 100 };
+  const off = (n: number): Box => ({ x: 5000 + 500 * n, y: 5000, w: 100, h: 100 });
+
+  // a, c, e are reviewable; b and d sit on the existing label.
+  const rows = [
+    at("a", 1, off(1)),
+    at("b", 2, on),
+    at("c", 3, off(2)),
+    at("d", 4, on),
+    at("e", 5, off(3)),
+  ];
+  const { visible, hidden } = partitionQueue(rows, [label]);
+
+  it("filters to exactly the reviewable rows", () => {
+    expect(visible.map((c) => c.id)).toEqual(["a", "c", "e"]);
+    expect(hidden.map((c) => c.id)).toEqual(["b", "d"]);
+  });
+
+  it("steps over the hidden rows instead of stopping on them", () => {
+    expect(stepCandidateId(visible, "a", 1)).toBe("c");
+    expect(stepCandidateId(visible, "c", 1)).toBe("e");
+    expect(stepCandidateId(visible, "c", -1)).toBe("a");
+    // Clamped at the ends of the VISIBLE queue, not the full one.
+    expect(stepCandidateId(visible, "e", 1)).toBe("e");
+    expect(stepCandidateId(visible, "a", -1)).toBe("a");
+  });
+
+  it("never offers a hidden row as the next unreviewed one", () => {
+    expect(nextUnreviewedId(visible, null)).toBe("a");
+    expect(nextUnreviewedId(visible, "a")).toBe("c");
+    expect(nextUnreviewedId(visible, "c")).toBe("e");
+    // Wraps within the visible queue, same as it always did.
+    expect(nextUnreviewedId(visible, "e")).toBe("a");
+  });
+
+  it("reports the queue as finished once the visible rows are judged", () => {
+    const judged = visible.map((c) => ({ ...c, verdict: "hut" as Verdict }));
+    expect(nextUnreviewedId(judged, null)).toBeNull();
+  });
+
+  it("counts progress against the visible denominator", () => {
+    const withOne = partitionQueue(
+      rows.map((c) => (c.id === "a" ? { ...c, verdict: "hut" as Verdict } : c)),
+      [label],
+    ).visible;
+    expect(reviewedCount(withOne)).toBe(1);
+    expect(withOne.length).toBe(3); // "reviewed 1 / 3", not "1 / 5"
+  });
+
+  it("counts the same numerator either way, since a hidden row is unreviewed", () => {
+    // Nothing hidden carries a verdict (partitionQueue never hides a decided
+    // candidate), so the numerator cannot change when the filter comes off.
+    const decided = rows.map((c) => (c.id === "c" ? { ...c, verdict: "unsure" as Verdict } : c));
+    expect(reviewedCount(partitionQueue(decided, [label]).visible)).toBe(reviewedCount(decided));
   });
 });
 

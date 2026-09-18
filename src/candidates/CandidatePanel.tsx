@@ -11,6 +11,9 @@ import { CandidateList } from "./CandidateList";
 // in the same place whichever one is mounted.
 export function CandidatePanel({
   candidates,
+  hiddenCount,
+  revealHidden,
+  batch,
   selectedCandidateId,
   onSetVerdict,
   onClearVerdict,
@@ -18,7 +21,19 @@ export function CandidatePanel({
   labelsVisible,
   zoomSlot,
 }: {
+  // The VISIBLE queue, already filtered by App — everything here counts what
+  // the reviewer is actually asked to work through.
   candidates: Candidate[];
+  // How many of this ortho's candidates sit on a box that is already labelled.
+  // Counted whichever way `revealHidden` is set, so the line reads the same
+  // either way and only the verb changes.
+  hiddenCount: number;
+  revealHidden: boolean;
+  // Which pipeline batch this queue came from — the newest one on the ortho,
+  // which is the server's default. Shown because two batches now exist in the
+  // database and "which boxes am I looking at" should not need a devtools tab.
+  // Null when the queue is empty and there is nothing to name.
+  batch: string | null;
   selectedCandidateId: string | null;
   // Same handlers the Y / N / U and Backspace keys call, so the buttons and the
   // shortcuts can never drift apart.
@@ -44,6 +59,25 @@ export function CandidatePanel({
           reviewed {reviewed} / {candidates.length}
         </span>
       </div>
+
+      {/* Batch and the already-labelled skip, together: both answer "what am I
+          being shown, and what am I not". Rendered outside the selected branch
+          so an ortho whose whole queue is hidden still explains itself. */}
+      {(batch !== null || hiddenCount > 0) && (
+        <div className="rail-section">
+          {batch !== null && <p className="rail-hint">Batch {batch}</p>}
+          {hiddenCount > 0 && (
+            <p className="rail-hint">
+              {revealHidden
+                ? `${hiddenCount} already labelled, shown`
+                : `${hiddenCount} hidden, already labelled`}{" "}
+              — {hiddenCount === 1 ? "it overlaps a" : "they overlap a"} box you
+              have already drawn. <kbd>H</kbd> {revealHidden ? "hides" : "shows"}{" "}
+              {hiddenCount === 1 ? "it" : "them"}.
+            </p>
+          )}
+        </div>
+      )}
 
       {selected ? (
         <>
@@ -88,9 +122,11 @@ export function CandidatePanel({
       ) : (
         <div className="rail-section">
           <p className="rail-hint">
-            {candidates.length === 0
-              ? "No candidates on this ortho."
-              : "Pick a candidate from the list to review it."}
+            {candidates.length > 0
+              ? "Pick a candidate from the list to review it."
+              : hiddenCount > 0
+                ? "Every candidate on this ortho sits on a box you have already labelled."
+                : "No candidates on this ortho."}
           </p>
         </div>
       )}

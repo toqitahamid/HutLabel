@@ -119,6 +119,32 @@ describe("review-mode bindings", () => {
     expect(resolveKey(press("l"), REVIEW_WITH_HUT).action).toEqual({ kind: "toggleLabels" });
   });
 
+  it("toggles the already-labelled candidates on H, in either case", () => {
+    for (const key of ["h", "H"]) {
+      const res = resolveKey(press(key), REVIEW);
+      expect(res.action).toEqual({ kind: "toggleHidden" });
+      expect(res.preventDefault).toBe(true);
+    }
+    expect(resolveKey(press("h"), REVIEW_WITH_HUT).action).toEqual({ kind: "toggleHidden" });
+  });
+
+  it("leaves H alone once a modifier is held", () => {
+    // ⌘H hides the window on macOS and Ctrl+H is the browser's history — the
+    // same rule L follows next door.
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }]) {
+      const res = resolveKey(press("h", mods), REVIEW);
+      expect(res.action).toEqual({ kind: "none" });
+      expect(res.preventDefault).toBe(false);
+    }
+  });
+
+  it("keeps H and L apart", () => {
+    // One hides existing labels, the other hides candidates that sit on them;
+    // swapping the two would be silent and confusing.
+    expect(resolveKey(press("h"), REVIEW).action).toEqual({ kind: "toggleHidden" });
+    expect(resolveKey(press("l"), REVIEW).action).toEqual({ kind: "toggleLabels" });
+  });
+
   it("leaves L alone once a modifier is held", () => {
     // ⌘L is the browser's address bar, Ctrl+L likewise — taking either would
     // break a key the reviewer expects to work.
@@ -173,11 +199,20 @@ describe("labeling mode is unchanged", () => {
   });
 
   it("has no review bindings", () => {
-    for (const key of ["y", "n", "u", "j", "k", "l"]) {
+    for (const key of ["y", "n", "u", "j", "k", "l", "h"]) {
       const { action } = resolveKey(press(key), LABEL);
       expect(action.kind).not.toBe("verdict");
       expect(action.kind).not.toBe("stepCandidate");
       expect(action.kind).not.toBe("toggleLabels");
+      expect(action.kind).not.toBe("toggleHidden");
+    }
+  });
+
+  it("leaves H free while labeling — there is no queue to filter there", () => {
+    for (const key of ["h", "H"]) {
+      const res = resolveKey(press(key), LABEL);
+      expect(res.action).toEqual({ kind: "none" });
+      expect(res.preventDefault).toBe(false);
     }
   });
 

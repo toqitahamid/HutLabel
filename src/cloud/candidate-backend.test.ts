@@ -445,4 +445,21 @@ describe("ApiCandidateBackend request bodies", () => {
     expect(calls[0].init.method).toBe("DELETE");
     expect(calls[0].init.body).toBeUndefined();
   });
+
+  it("asks for no batch, so the route serves the ortho's newest one", async () => {
+    // Two batches now live in the database side by side. The client never names
+    // one: api/candidates/index.ts resolves the ortho's most recent batch
+    // (created_at desc, batch desc) and returns only that batch's rows, so the
+    // reviewer's queue is one batch rather than both merged.
+    const calls = stubOk();
+    await backend().listCandidates("demo-site-a");
+    expect(calls[0].url).toBe("/api/candidates?ortho_id=demo-site-a");
+    expect(calls[0].url).not.toContain("batch");
+  });
+
+  it("still passes an explicit batch through when one is given", async () => {
+    const calls = stubOk();
+    await backend().listCandidates("demo-site-a", "demo-batch-2");
+    expect(calls[0].url).toBe("/api/candidates?ortho_id=demo-site-a&batch=demo-batch-2");
+  });
 });
