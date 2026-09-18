@@ -692,16 +692,22 @@
    instead of pushing those sections off the bottom.
    The floor matters: it is the ONLY shrinkable child of `.right-rail`, so
    without one it absorbs every pixel of overflow and collapses to nothing.
-   Review mode's fixed sections (magnifier square + verdict controls + the two
-   hint paragraphs) run ~760px, taller than the rail on a laptop-height
-   window, and a zero floor made the list vanish rather than let the rail
-   scroll. ~4 rows plus the label; past that the rail's own overflow-y takes
-   over. */
+   Review mode's fixed sections used to run ~950px — taller than the rail on a
+   laptop-height window — because three instruction paragraphs sat above the
+   list, and a zero floor made the list vanish rather than let the rail scroll.
+   Those paragraphs are now behind the panel's "?" (ReviewHelp) and the fixed
+   stack is ~594px on a 300px rail, so the list clears the floor by a wide
+   margin; the floor stays as the backstop for a short window. ~4 rows plus the
+   label; past that the rail's own overflow-y takes over.
+   No bottom border: it is the rail's last SECTION, but in review mode the "?"
+   dialog is a later sibling, so :last-child alone would put a rule back under
+   the list whenever that dialog is open. */
 .hut-list-section {
   flex: 1 1 auto;
   min-height: 150px;
   display: flex;
   flex-direction: column;
+  border-bottom: none;
 }
 
 .hut-list {
@@ -758,8 +764,83 @@
   color: var(--bg-app);
 }
 
+/* The header's "?": opens the review instructions that used to be paragraphs
+   in the rail. Same subtle icon-button look as the help modal's own ×. */
+.rail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-help {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background-color 60ms ease, color 60ms ease,
+    border-color 60ms ease;
+}
+
+.rail-help:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.rail-help:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* One muted line of state (batch · labels · hidden), tighter than a normal
+   rail-section: every pixel here comes out of the candidate list below. */
+.rail-section.rail-meta {
+  padding: 8px 16px;
+}
+
+.rail-meta .rail-hint {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Prev / Next with the queue position between them. The buttons are disabled
+   at the ends because stepCandidateId clamps rather than wraps — see
+   queueNav(), which derives that from the stepping itself. */
+.candidate-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn.candidate-step {
+  flex: 1 1 0;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.candidate-position {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 44px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
 /* Three segmented buttons, same idiom as .confidence-toggle above; each lights
-   in its own color when pressed, matching the stroke styles on the map. */
+   in its own color when pressed, matching the stroke styles on the map. Each
+   carries its own key, so the rail needs no legend line to explain them. */
 .verdict-toggle {
   display: flex;
   gap: 6px;
@@ -767,20 +848,46 @@
 
 .verdict-option {
   flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   font: inherit;
   font-size: 12px;
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
+  padding: 6px 6px;
   cursor: pointer;
   transition: background-color var(--transition-fast) ease,
     border-color var(--transition-fast) ease, color var(--transition-fast) ease;
 }
 
+.verdict-name {
+  white-space: nowrap;
+}
+
+/* The key printed on a verdict button. Inherits `currentColor`, so it flips to
+   the dark-on-accent treatment with the rest of the button when pressed. */
+.verdict-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
 .verdict-option:hover {
   border-color: var(--border-strong);
+}
+
+.verdict-option:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .verdict-option[aria-pressed="true"] {
@@ -806,7 +913,13 @@
 
 .verdict-clear {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   font-size: 12px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
 }
 
 /* A reviewed row keeps a colored left border, so the list scans as a progress
@@ -960,7 +1073,8 @@
   flex-shrink: 0;
 }
 
-.help-row kbd {
+.help-row kbd,
+.review-help kbd {
   font-family: var(--font-mono);
   font-size: 11px;
   padding: 2px 6px;
@@ -968,6 +1082,26 @@
   border-radius: 4px;
   background: var(--bg-elevated);
   color: var(--text-primary);
+}
+
+/* The review panel's "?" dialog: the same modal as the keyboard reference, one
+   narrow column of short labelled sections instead of the two-column key grid.
+   Its content used to be three paragraphs stacked above the candidate list. */
+.review-help {
+  width: min(440px, calc(100vw - 48px));
+}
+
+.review-help-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.review-help-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 580px) {

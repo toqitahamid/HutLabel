@@ -4,6 +4,7 @@ import {
   MAX_RANK,
   MAX_SCORE,
   VERDICTS,
+  VERDICT_KEY,
   adjustedBox,
   adjustedBoxProblems,
   boxColumns,
@@ -17,6 +18,7 @@ import {
   labelledBoxes,
   nextUnreviewedId,
   partitionQueue,
+  queueNav,
   restoreVerdict,
   reviewedCount,
   sameBox,
@@ -804,6 +806,54 @@ describe("stepCandidateId", () => {
   it("ignores verdicts — stepping walks the whole queue", () => {
     const reviewed = [candidate("a", 1, "hut"), candidate("b", 2, "not_hut")];
     expect(stepCandidateId(reviewed, "a", 1)).toBe("b");
+  });
+});
+
+describe("VERDICT_KEY", () => {
+  it("prints, for every verdict, a key that actually sets it", () => {
+    for (const v of VERDICTS) {
+      const key = VERDICT_KEY[v];
+      expect(verdictForKey(key)).toBe(v);
+      expect(verdictForKey(key.toLowerCase())).toBe(v);
+    }
+  });
+});
+
+describe("queueNav", () => {
+  const list = [candidate("a", 1), candidate("b", 2), candidate("c", 3)];
+
+  it("numbers the selected candidate 1-based within the visible queue", () => {
+    expect(queueNav(list, "a").label).toBe("1 / 3");
+    expect(queueNav(list, "b").label).toBe("2 / 3");
+    expect(queueNav(list, "c").label).toBe("3 / 3");
+  });
+  it("counts the queue it is given, not the ortho", () => {
+    // What App passes once partitionQueue has taken the already-labelled ones
+    // out: the indicator has to agree with the list's own "#n" positions.
+    const { visible } = partitionQueue(
+      [candidate("a", 1), candidate("b", 2), candidate("c", 3)],
+      // Sits inside b's box alone (a ends at x=280, c starts at x=300).
+      [{ x: 282, y: 200, w: 16, h: 180 }],
+    );
+    expect(visible.map((c) => c.id)).toEqual(["a", "c"]);
+    expect(queueNav(visible, "c").label).toBe("2 / 2");
+  });
+  it("shows the total with a dash for the index when nothing is selected", () => {
+    expect(queueNav(list, null).label).toBe("– / 3");
+    expect(queueNav(list, "gone").label).toBe("– / 3");
+  });
+  it("disables each button exactly where stepping clamps", () => {
+    expect(queueNav(list, "a")).toMatchObject({ canPrev: false, canNext: true });
+    expect(queueNav(list, "b")).toMatchObject({ canPrev: true, canNext: true });
+    expect(queueNav(list, "c")).toMatchObject({ canPrev: true, canNext: false });
+  });
+  it("leaves both live with nothing selected — either lands on the head", () => {
+    expect(queueNav(list, null)).toMatchObject({ canPrev: true, canNext: true });
+  });
+  it("offers no move on a one-candidate queue, and none on an empty one", () => {
+    const one = [candidate("a", 1)];
+    expect(queueNav(one, "a")).toEqual({ label: "1 / 1", canPrev: false, canNext: false });
+    expect(queueNav([], null)).toEqual({ label: "– / 0", canPrev: false, canNext: false });
   });
 });
 

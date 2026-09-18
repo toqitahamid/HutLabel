@@ -366,6 +366,15 @@ export function verdictChange(
   return current === pressed ? { kind: "none" } : { kind: "set", verdict: pressed };
 }
 
+// The key printed on each verdict button — the display side of verdictForKey
+// below, kept beside it so a button can never advertise a key that does not set
+// it. src/candidates/model.test.ts asserts the two agree over every verdict.
+export const VERDICT_KEY: Record<Verdict, string> = {
+  hut: "Y",
+  not_hut: "N",
+  unsure: "U",
+};
+
 // Review-mode key table, kept here (not in the component) so the shortcuts, the
 // help modal and the tests all read the same map. Returns null for a key that
 // review mode doesn't claim, which is the caller's signal to let it through to
@@ -419,6 +428,32 @@ export function stepCandidateId(
   if (current === -1) return candidates[0].id;
   const next = Math.max(0, Math.min(current + delta, candidates.length - 1));
   return candidates[next].id;
+}
+
+// What the panel's Prev / Next control shows and whether each button is live.
+// `label` is the reviewer's position in the VISIBLE queue, 1-based ("3 / 17"),
+// with an en dash for the index while nothing is selected — the total is still
+// worth showing then, since it says how much work the ortho holds.
+export type QueueNav = { label: string; canPrev: boolean; canNext: boolean };
+
+// Derived from stepCandidateId rather than from the index arithmetic again, so
+// a button is disabled exactly when pressing its key would do nothing. If the
+// stepping rule ever changes from clamping to wrapping, the buttons follow it
+// without an edit here.
+export function queueNav(
+  candidates: Candidate[],
+  selectedId: string | null,
+): QueueNav {
+  const index = selectedId === null ? -1 : candidates.findIndex((c) => c.id === selectedId);
+  const moves = (delta: 1 | -1) => {
+    const next = stepCandidateId(candidates, selectedId, delta);
+    return next !== null && next !== selectedId;
+  };
+  return {
+    label: `${index === -1 ? "–" : index + 1} / ${candidates.length}`,
+    canPrev: moves(-1),
+    canNext: moves(1),
+  };
 }
 
 // Progress counter ("reviewed 7 / 10"): how many of these carry a verdict.

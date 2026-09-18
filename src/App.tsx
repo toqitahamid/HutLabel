@@ -355,6 +355,12 @@ export default function App() {
   // (`0` shortcut) — a counter rather than a boolean so pressing it twice in a
   // row (already reset) still re-fits the view each time.
   const [helpOpen, setHelpOpen] = useState(false);
+  // The review panel's own "?" dialog (src/candidates/ReviewHelp.tsx). Its
+  // state lives here rather than in the panel for one reason: the keydown
+  // effect below has to hand it the keyboard while it is open, exactly as it
+  // does for the three modals above, or Y / N / U would land verdicts on a
+  // candidate the reviewer cannot see behind it.
+  const [reviewHelpOpen, setReviewHelpOpen] = useState(false);
   // First-visit welcome card (see WELCOME_STORAGE_KEY) — starts open only
   // when the browser has no "already welcomed" flag yet.
   const [welcomeOpen, setWelcomeOpen] = useState(() => !readWelcomed());
@@ -576,6 +582,9 @@ export default function App() {
     setCandidates([]);
     setSelectedCandidateId(null);
     landedOrthoRef.current = null;
+    // The review "?" dialog unmounts with the panel, so a left-open flag would
+    // otherwise keep swallowing keys in labeling mode with nothing on screen.
+    setReviewHelpOpen(false);
   }, []);
 
   // Keep the toggle's "reviewed / total" counter in step with the live list.
@@ -1182,6 +1191,13 @@ export default function App() {
         if (e.key === "Escape") setHelpOpen(false);
         return;
       }
+      if (reviewHelpOpen) {
+        // Same rule for the review panel's "?" dialog — it owns the keyboard,
+        // and Esc closes it. Checked after the global help so that, if both
+        // were somehow open, the topmost-opened one still closes first.
+        if (e.key === "Escape") setReviewHelpOpen(false);
+        return;
+      }
 
       // Which action a key means lives in src/keymap.ts, as a pure function.
       // That is what lets a test prove, over the whole keyboard, that review
@@ -1256,6 +1272,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     helpOpen,
+    reviewHelpOpen,
     welcomeOpen,
     dismissWelcome,
     adminPanelOpen,
@@ -1546,7 +1563,11 @@ export default function App() {
             selectedCandidateId && handleVerdict(selectedCandidateId, "clear")
           }
           onFocusCandidate={handleFocusCandidate}
+          onStepCandidate={handleStepCandidate}
           labelsVisible={labelsVisible}
+          helpOpen={reviewHelpOpen}
+          onOpenHelp={() => setReviewHelpOpen(true)}
+          onCloseHelp={() => setReviewHelpOpen(false)}
           zoomSlot={<div className="zoom-slot" ref={setZoomSlotEl} />}
         />
       ) : (
